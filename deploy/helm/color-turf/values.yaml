@@ -32,7 +32,9 @@ web:
     repository: 183548421506.dkr.ecr.ap-northeast-2.amazonaws.com/color-turf-web
     tag: demo-20260715-1
     pullPolicy: IfNotPresent
-  replicas: 2
+  # One reverse proxy keeps every connection for a room on the same
+  # lease-owning game server. Game-server availability remains independent.
+  replicas: 1
   resources:
     requests: { cpu: 25m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
