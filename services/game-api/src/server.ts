@@ -75,6 +75,9 @@ interface RuntimeStats {
   cpuPercent: number;
 }
 
+export const DEFAULT_TICK_RATE_HZ = 20;
+const DEFAULT_TICK_INTERVAL_MS = 1000 / DEFAULT_TICK_RATE_HZ;
+
 const numeric = (value: unknown, fallback: number): number => {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -519,6 +522,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       publicBaseUrl: resolvePublicBaseUrl(request),
       appVersion: baseIdentity().version,
       socketPath,
+      tickRateHz: DEFAULT_TICK_RATE_HZ,
       adminTokenRequired: true,
     };
     response.json(config);
@@ -809,7 +813,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     });
     const address = httpServer.address() as AddressInfo;
     boundUrl = `http://127.0.0.1:${address.port}`;
-    tickTimer = setInterval(() => void runTicks(), 100);
+    tickTimer = setInterval(() => void runTicks(), DEFAULT_TICK_INTERVAL_MS);
     opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.to("ops").emit("ops.snapshot", snapshot)), 1000);
     snapshotTimer = setInterval(() => void persistRooms().catch((error) => addEvent("snapshot.failed", error instanceof Error ? error.message : "Snapshot failed", "system")), snapshotIntervalMs);
     leaseTimer = setInterval(() => {

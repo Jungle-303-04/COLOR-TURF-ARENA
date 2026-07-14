@@ -284,6 +284,7 @@ export interface PublicConfig {
   publicBaseUrl: string;
   appVersion: string;
   socketPath: string;
+  tickRateHz: number;
   adminTokenRequired: boolean;
 }
 

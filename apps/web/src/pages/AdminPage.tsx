@@ -79,6 +79,7 @@ export const AdminPage = () => {
   const [ops, setOps] = useState<OpsSnapshot | null>(null);
   const [selectedCode, setSelectedCode] = useState(() => new URLSearchParams(window.location.search).get("room")?.toUpperCase() ?? localStorage.getItem("color-turf-admin-room") ?? "");
   const [baseUrl, setBaseUrl] = useState(window.location.origin);
+  const [tickRateHz, setTickRateHz] = useState(20);
   const [settings, setSettings] = useState(initialSettings);
   const [announcement, setAnnouncement] = useState("");
   const [busy, setBusy] = useState(false);
@@ -110,7 +111,7 @@ export const AdminPage = () => {
   }, []);
 
   useEffect(() => {
-    void api.config().then((config) => setBaseUrl(config.publicBaseUrl)).catch(() => undefined);
+    void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
     if (getAdminToken()) void verify();
   }, [verify]);
 
@@ -370,7 +371,7 @@ export const AdminPage = () => {
             <div className={`notice-bar ${error ? "notice-error" : ""}`}>{error || notice}</div>
           </div>
 
-          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">실측 지표</span></div><div className="service-metric-grid"><div><span>연결 소켓</span><strong>{ops?.server.connectedSockets ?? 0}</strong></div><div><span>게임 틱 P95</span><strong>{formatNumber(ops?.server.metrics.tickP95Ms ?? 0, 1)}ms</strong></div><div><span>전송 P95</span><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div><div><span>왕복 지연 P95</span><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div><div><span>상태 크기 P95</span><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div><div><span>스냅샷 경과</span><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div><div><span>버전</span><strong>{ops?.server.identity.version ?? "—"}</strong></div><div><span>클러스터</span><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div></div></section>
+          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">실측 지표</span></div><div className="service-metric-grid"><div><span>서버 Tick</span><strong>{tickRateHz}Hz</strong></div><div><span>연결 소켓</span><strong>{ops?.server.connectedSockets ?? 0}</strong></div><div><span>게임 틱 P95</span><strong>{formatNumber(ops?.server.metrics.tickP95Ms ?? 0, 1)}ms</strong></div><div><span>전송 P95</span><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div><div><span>왕복 지연 P95</span><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div><div><span>상태 크기 P95</span><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div><div><span>스냅샷 경과</span><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div><div><span>버전</span><strong>{ops?.server.identity.version ?? "—"}</strong></div><div><span>클러스터</span><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div></div></section>
 
           <section className="panel event-panel"><div className="panel-heading"><div><span className="panel-kicker">운영 이벤트 기록</span><h2>배포·장애·복구 이벤트</h2></div><span className="live-chip"><i /> 실시간</span></div><ol className="event-list admin-timeline">{ops?.recentEvents.slice(0, 18).map((event) => <li key={event.id}><time>{formatTime(event.at)}</time><span className={`event-dot source-${event.source}`} /><div><b>{event.type}</b><p>{event.roomCode ? `[${event.roomCode}] ` : ""}{event.message}</p></div></li>)}</ol></section>
 

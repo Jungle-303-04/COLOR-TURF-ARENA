@@ -8,6 +8,7 @@ import { createSocket } from "../lib/socket";
 
 export const OpsPage = () => {
   const [snapshot, setSnapshot] = useState<OpsSnapshot | null>(null);
+  const [tickRateHz, setTickRateHz] = useState(20);
   const [socketLive, setSocketLive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -21,6 +22,7 @@ export const OpsPage = () => {
     socket.on("disconnect", () => setSocketLive(false));
     socket.on("ops.snapshot", (next: OpsSnapshot) => setSnapshot(next));
     socket.connect();
+    void api.config().then((config) => setTickRateHz(config.tickRateHz)).catch(() => undefined);
     void api.ops().then(setSnapshot).catch((loadError: unknown) => setError(loadError instanceof Error ? loadError.message : "관제 상태를 불러오지 못했습니다."));
     return () => {
       socket.disconnect();
@@ -116,7 +118,7 @@ export const OpsPage = () => {
           </div>
           <div className="simulation-grid">
             <button type="button" disabled={busy} className={simulation?.latencyMs ? "simulation-card is-active" : "simulation-card"} onClick={() => void runSimulation("lag", { delayMs: simulation?.latencyMs ? 0 : 350 })}>
-              <span className="sim-icon">≈</span><div><b>Tick latency</b><p>10Hz 게임 Tick에 실제 지연을 주입</p></div><strong>{simulation?.latencyMs ?? 0} ms</strong>
+              <span className="sim-icon">≈</span><div><b>Tick latency</b><p>{tickRateHz}Hz 게임 Tick에 실제 지연을 주입</p></div><strong>{simulation?.latencyMs ?? 0} ms</strong>
             </button>
             <button type="button" disabled={busy} className={simulation?.forceFullBroadcast ? "simulation-card is-active" : "simulation-card"} onClick={() => void runSimulation("full-broadcast")}>
               <span className="sim-icon">▦</span><div><b>Full Broadcast</b><p>매 Tick 전체 216×216 Grid 전송</p></div><strong>{simulation?.forceFullBroadcast ? "FULL" : "DELTA"}</strong>

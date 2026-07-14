@@ -15,6 +15,7 @@ export const ScreenPage = () => {
   const roomCode = rawCode.toUpperCase();
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [baseUrl, setBaseUrl] = useState(window.location.origin);
+  const [tickRateHz, setTickRateHz] = useState(20);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [timeline, setTimeline] = useState<EventLogEntry[]>([]);
@@ -22,7 +23,7 @@ export const ScreenPage = () => {
   const rendererRef = useRef<ArenaCanvasRenderer | null>(null);
 
   useEffect(() => {
-    void api.config().then((config) => setBaseUrl(config.publicBaseUrl)).catch(() => undefined);
+    void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
     const socket = createSocket();
     const watch = () => socket.emit("spectator_subscribe", { roomCode }, (result: WatchResult) => {
       if (result.ok && result.snapshot) { setSnapshot(result.snapshot); setError(""); }
@@ -104,7 +105,7 @@ export const ScreenPage = () => {
           <div className="arena-corner-label"><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()}</span><b>{snapshot.server.version}</b></div>
         </main>
 
-        <footer className="screen-footer"><span><i className="legend-dot" style={{ background: snapshot.config.teams.A.color }} />SERVER AUTHORITATIVE · 10Hz</span><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()} · {snapshot.server.broadcastMode.toUpperCase()}</span><span><i className="legend-dot" style={{ background: snapshot.config.teams.B.color }} />SEQUENCE {snapshot.sequence}</span></footer>
+        <footer className="screen-footer"><span><i className="legend-dot" style={{ background: snapshot.config.teams.A.color }} />SERVER AUTHORITATIVE · {tickRateHz}Hz</span><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()} · {snapshot.server.broadcastMode.toUpperCase()}</span><span><i className="legend-dot" style={{ background: snapshot.config.teams.B.color }} />SEQUENCE {snapshot.sequence}</span></footer>
       </>}
     </div>
   );

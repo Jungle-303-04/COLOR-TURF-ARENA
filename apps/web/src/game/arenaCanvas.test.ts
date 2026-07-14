@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { getCameraViewport, getCanvasFit, interpolatePosition } from "./arenaCanvas";
 
 describe("authoritative position interpolation", () => {
-  it("smoothly interpolates between 10Hz server positions", () => {
+  it("smoothly interpolates between 20Hz server positions", () => {
     expect(interpolatePosition({ x: 10, y: 20 }, { x: 20, y: 40 }, 0.5)).toEqual({ x: 15, y: 30 });
     expect(interpolatePosition({ x: 10, y: 20 }, { x: 20, y: 40 }, -1)).toEqual({ x: 10, y: 20 });
     expect(interpolatePosition({ x: 10, y: 20 }, { x: 20, y: 40 }, 2)).toEqual({ x: 20, y: 40 });

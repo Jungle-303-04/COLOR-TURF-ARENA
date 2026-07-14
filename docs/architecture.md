@@ -19,7 +19,7 @@ flowchart LR
     subgraph Server["Node + Express + Socket.IO"]
         REST["Public / Admin / Ops APIs"]
         Socket["join · resume · input · delta"]
-        Engine["GameRoom authority\n10Hz · speed · paint · deadline"]
+        Engine["GameRoom authority\n20Hz · speed · paint · deadline"]
         Broadcaster["Delta / Full broadcaster"]
         Metrics["prom-client + JSON logs"]
         Lease["Room lease owner"]
@@ -65,7 +65,7 @@ sequenceDiagram
     G-->>P: room_snapshot(grid, players, score, server)
     P->>S: player_input(sequence, direction, sentAt)
     S->>G: validate session, status, range, rate, order
-    loop 10Hz authoritative tick
+    loop 20Hz authoritative tick
         G->>G: cap speed, move player, paint cells
         alt Stable delta mode
             G-->>P: state_delta(changedCells, players)
