@@ -1,5 +1,7 @@
 import type { PlayerPublic, RoomSnapshot, TeamId } from "@paint-arena/shared";
 
+export const DEFAULT_CAMERA_SIZE = 72;
+
 /*
  * Canvas responsibility pattern adapted from over-engineer/Socket.io-whiteboard
  * lib/whiteboard.js (MIT): align the backing store to the CSS box and render
@@ -19,15 +21,36 @@ export interface CameraViewport {
   height: number;
 }
 
+export interface CanvasFit {
+  cellSize: number;
+  renderWidth: number;
+  renderHeight: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
+
+export const getCanvasFit = (canvasWidth: number, canvasHeight: number, viewportWidth: number, viewportHeight: number): CanvasFit => {
+  const cellSize = Math.min(canvasWidth / viewportWidth, canvasHeight / viewportHeight);
+  const renderWidth = viewportWidth * cellSize;
+  const renderHeight = viewportHeight * cellSize;
+  return {
+    cellSize,
+    renderWidth,
+    renderHeight,
+    offsetX: (canvasWidth - renderWidth) / 2,
+    offsetY: (canvasHeight - renderHeight) / 2,
+  };
+};
 
 export const getCameraViewport = (
   gridWidth: number,
   gridHeight: number,
   focusX: number,
   focusY: number,
-  requestedWidth = 96,
-  requestedHeight = 54,
+  requestedWidth = DEFAULT_CAMERA_SIZE,
+  requestedHeight = DEFAULT_CAMERA_SIZE,
 ): CameraViewport => {
   const width = Math.min(gridWidth, Math.max(24, requestedWidth));
   const height = Math.min(gridHeight, Math.max(14, requestedHeight));
@@ -54,8 +77,8 @@ export class ArenaCanvasRenderer {
     if (!context) throw new Error("Canvas 2D context is unavailable");
     this.context = context;
     this.mode = options.mode ?? "full";
-    this.viewportWidthCells = Math.max(24, options.viewportWidthCells ?? 96);
-    this.viewportHeightCells = Math.max(14, options.viewportHeightCells ?? 54);
+    this.viewportWidthCells = Math.max(24, options.viewportWidthCells ?? DEFAULT_CAMERA_SIZE);
+    this.viewportHeightCells = Math.max(14, options.viewportHeightCells ?? DEFAULT_CAMERA_SIZE);
     this.resizeObserver = new ResizeObserver(() => this.draw());
     this.resizeObserver.observe(canvas);
   }
@@ -99,14 +122,13 @@ export class ArenaCanvasRenderer {
     const { gridWidth, gridHeight, teams } = snapshot.config;
     const focus = snapshot.players.find((player) => player.id === this.focusPlayerId);
     const viewport = this.viewport(snapshot, focus);
-    const cellWidth = width / viewport.width;
-    const cellHeight = height / viewport.height;
+    const { cellSize, renderWidth, renderHeight, offsetX, offsetY } = getCanvasFit(width, height, viewport.width, viewport.height);
     const startX = Math.max(0, Math.floor(viewport.left));
     const endX = Math.min(gridWidth, Math.ceil(viewport.left + viewport.width));
     const startY = Math.max(0, Math.floor(viewport.top));
     const endY = Math.min(gridHeight, Math.ceil(viewport.top + viewport.height));
-    const toCanvasX = (value: number) => (value - viewport.left) * cellWidth;
-    const toCanvasY = (value: number) => (value - viewport.top) * cellHeight;
+    const toCanvasX = (value: number) => offsetX + (value - viewport.left) * cellSize;
+    const toCanvasY = (value: number) => offsetY + (value - viewport.top) * cellSize;
 
     ctx.fillStyle = "#090b13";
     ctx.fillRect(0, 0, width, height);
@@ -117,23 +139,23 @@ export class ArenaCanvasRenderer {
         const drawX = toCanvasX(x);
         const drawY = toCanvasY(y);
         ctx.fillStyle = teams[owner].softColor;
-        ctx.fillRect(drawX, drawY, Math.ceil(cellWidth + 0.5), Math.ceil(cellHeight + 0.5));
+        ctx.fillRect(drawX, drawY, Math.ceil(cellSize + 0.5), Math.ceil(cellSize + 0.5));
         ctx.globalAlpha = 0.44;
         ctx.fillStyle = teams[owner].color;
-        ctx.fillRect(drawX, drawY, Math.ceil(cellWidth + 0.5), Math.ceil(cellHeight + 0.5));
+        ctx.fillRect(drawX, drawY, Math.ceil(cellSize + 0.5), Math.ceil(cellSize + 0.5));
         ctx.globalAlpha = 1;
       }
     }
 
     ctx.strokeStyle = "rgba(255,255,255,.09)";
     ctx.lineWidth = 1;
-    ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
+    ctx.strokeRect(offsetX + 0.5, offsetY + 0.5, renderWidth - 1, renderHeight - 1);
     for (const player of snapshot.players) {
       if (player.position.x < viewport.left - 1 || player.position.x > viewport.left + viewport.width + 1 || player.position.y < viewport.top - 1 || player.position.y > viewport.top + viewport.height + 1) continue;
       const centerX = toCanvasX(player.position.x);
       const centerY = toCanvasY(player.position.y);
       const team = teams[player.team as TeamId];
-      const radius = this.mode === "minimap" ? Math.max(2, Math.min(width / 90, 5)) : this.mode === "follow" ? Math.max(7, Math.min(width / 34, 15)) : Math.max(4, Math.min(width / 60, 12));
+      const radius = this.mode === "minimap" ? Math.max(2, Math.min(renderWidth / 90, 5)) : this.mode === "follow" ? Math.max(7, Math.min(renderWidth / 34, 15)) : Math.max(4, Math.min(renderWidth / 60, 12));
       ctx.save();
       ctx.globalAlpha = player.connected ? 1 : 0.35;
       const previous = this.previousPositions.get(player.id);
@@ -141,7 +163,7 @@ export class ArenaCanvasRenderer {
         const previousX = toCanvasX(previous.x);
         const previousY = toCanvasY(previous.y);
         const distance = Math.hypot(centerX - previousX, centerY - previousY);
-        if (distance > 0.2 && previousX >= -radius && previousX <= width + radius && previousY >= -radius && previousY <= height + radius) {
+        if (distance > 0.2 && previousX >= offsetX - radius && previousX <= offsetX + renderWidth + radius && previousY >= offsetY - radius && previousY <= offsetY + renderHeight + radius) {
           ctx.globalAlpha = player.connected ? 0.8 : 0.2;
           ctx.strokeStyle = team.color;
           ctx.lineWidth = Math.max(this.mode === "minimap" ? 1 : 2, radius * 0.45);
@@ -175,8 +197,8 @@ export class ArenaCanvasRenderer {
         const label = isFocus ? `YOU · ${player.nickname}` : player.nickname;
         ctx.font = `${isFocus ? "900" : "800"} ${isFocus ? 10 : 9}px ui-monospace, monospace`;
         const labelWidth = ctx.measureText(label).width;
-        const labelCenterX = clamp(centerX, (labelWidth / 2) + 6, width - (labelWidth / 2) - 6);
-        const labelBaselineY = Math.max(14, centerY - radius - 7);
+        const labelCenterX = clamp(centerX, offsetX + (labelWidth / 2) + 6, offsetX + renderWidth - (labelWidth / 2) - 6);
+        const labelBaselineY = Math.max(offsetY + 14, centerY - radius - 7);
         ctx.fillStyle = isFocus ? "rgba(5,6,11,.88)" : "rgba(5,6,11,.72)";
         ctx.fillRect(labelCenterX - (labelWidth / 2) - 4, labelBaselineY - 11, labelWidth + 8, 14);
         ctx.fillStyle = isFocus ? "#ffffff" : team.color;
@@ -193,16 +215,18 @@ export class ArenaCanvasRenderer {
       ctx.setLineDash([3, 2]);
       ctx.lineWidth = 1.5;
       ctx.strokeStyle = "rgba(255,255,255,.9)";
-      ctx.strokeRect((camera.left / gridWidth) * width, (camera.top / gridHeight) * height, (camera.width / gridWidth) * width, (camera.height / gridHeight) * height);
+      ctx.strokeRect(offsetX + (camera.left / gridWidth) * renderWidth, offsetY + (camera.top / gridHeight) * renderHeight, (camera.width / gridWidth) * renderWidth, (camera.height / gridHeight) * renderHeight);
       ctx.restore();
     }
 
     if (this.mode === "follow") {
-      const vignette = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.18, width / 2, height / 2, Math.max(width, height) * 0.72);
+      const centerX = offsetX + renderWidth / 2;
+      const centerY = offsetY + renderHeight / 2;
+      const vignette = ctx.createRadialGradient(centerX, centerY, Math.min(renderWidth, renderHeight) * 0.18, centerX, centerY, Math.max(renderWidth, renderHeight) * 0.72);
       vignette.addColorStop(0.55, "rgba(3,4,9,0)");
       vignette.addColorStop(1, "rgba(3,4,9,.68)");
       ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(offsetX, offsetY, renderWidth, renderHeight);
     }
   }
 }

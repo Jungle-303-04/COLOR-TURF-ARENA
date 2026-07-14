@@ -20,8 +20,8 @@
 
 ### 2026-07-15 월드·부하 확장 검증
 
-- 기본 월드는 `288×162`로 46,656 cells이며 기존 `160×90`의 3.24배다. 게임 단위 테스트가 이 기본값을 고정한다.
-- 플레이 카메라는 `96×54` cells만 표시해 전체 월드의 1/9을 노출한다. 중앙·좌상단·우하단·작은 월드 경계 조건을 단위 테스트했다.
+- 기본 월드는 `216×216` 정사각형으로 46,656 cells다. 기존 직사각형 월드와 셀 수를 동일하게 유지해 부하 비교가 가능하며 게임 단위 테스트가 이 기본값을 고정한다.
+- 플레이 카메라는 `72×72` 정사각형 cells만 표시해 전체 월드의 1/9을 노출한다. 중앙·좌상단·우하단·작은 월드 경계 조건을 단위 테스트했다.
 - Compose 방 `A87XN`에 관리 API로 실제 WebSocket 봇 100개를 한 번에 요청했다. 6초 측정 시 98 players, 104 sockets, 340 inputs/s, input P95 246ms, tick P95 0.24ms, event-loop P95 43.97ms, CPU 100%, RSS 210.40MB가 `/api/ops`에 기록됐다. 이후 500개 회수 명령으로 봇 수 0을 확인했다.
 - 최종 이미지 재기동 후 방 `2CXQU`에 봇 50개를 요청해 50개 모두 연결, 442 inputs/s, input P95 59ms, tick P95 0.14ms를 확인했고 전부 회수했다.
 - 공지는 전체 Grid Snapshot 대신 `state_delta`로 즉시 전송되며, 자동 테스트와 Compose 런타임 모두에서 약 2초 표시 후 3초 시점에 `announcement=null`로 제거되는 것을 확인했다.
@@ -43,7 +43,7 @@
 
 - `/admin`: `demo-admin` 토큰 로그인, 복구된 방 자동 선택, 미니맵, metric 카드, Bot/Paint Boost/공지/Chaos controls와 timeline을 확인했다.
 - `/play/M5KTY`: 닉네임 입장, 팀 배정, 전체 Canvas, 가상 조이스틱, RTT, 서버 버전·클러스터·release 표시를 확인했다.
-- 390×844 viewport에서 document width와 viewport width가 모두 390px이었다. 가로 overflow가 없고 Canvas는 367×206px, joystick 영역은 369×162px로 viewport 안에 배치됐다.
+- 모바일 플레이 Canvas와 미니맵은 `aspect-ratio: 1`을 사용하며, 렌더러도 가로·세로에 동일한 셀 배율을 적용한다.
 - `/watch/M5KTY`: 경기 결과, RED/BLUE 점수와 점유율, human/bot 수, server identity, sequence 표시를 확인했다.
 - 관리자·모바일 플레이·관전자 화면의 browser console error는 0건이었다.
 

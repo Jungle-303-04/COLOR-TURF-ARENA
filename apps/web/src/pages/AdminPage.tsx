@@ -34,10 +34,12 @@ interface OpsHistorySample {
   payload: number;
 }
 
+const DEFAULT_WORLD_SIZE = 216;
+
 const initialSettings: SettingsState = {
   durationSeconds: 90,
-  gridWidth: 288,
-  gridHeight: 162,
+  gridWidth: DEFAULT_WORLD_SIZE,
+  gridHeight: DEFAULT_WORLD_SIZE,
   paintRadius: 2,
   releaseChannel: "stable",
   colorA: "#ff405a",
@@ -225,8 +227,8 @@ export const AdminPage = () => {
     if (!room) return;
     setSettings({
       durationSeconds: room.config.durationSeconds,
-      gridWidth: room.config.gridWidth,
-      gridHeight: room.config.gridHeight,
+      gridWidth: DEFAULT_WORLD_SIZE,
+      gridHeight: DEFAULT_WORLD_SIZE,
       paintRadius: room.config.paintRadius,
       releaseChannel: room.config.releaseChannel,
       colorA: room.config.teams.A.color,

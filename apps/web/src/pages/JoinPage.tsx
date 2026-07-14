@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { useParams } from "react-router-dom";
 import type { InputPayload, InputResult, JoinResult, PlayerPublic, RoomSnapshot, StateDelta, Vector2 } from "@paint-arena/shared";
 import { BrandMark } from "../components/AppShell";
-import { ArenaCanvasRenderer } from "../game/arenaCanvas";
+import { ArenaCanvasRenderer, DEFAULT_CAMERA_SIZE } from "../game/arenaCanvas";
 import { createClientSessionId } from "../lib/clientId";
 import { formatTimer } from "../lib/format";
 import { createSocket } from "../lib/socket";
@@ -133,8 +133,8 @@ export const JoinPage = () => {
 
   useEffect(() => {
     if (!canvasRef.current || !minimapCanvasRef.current) return;
-    const renderer = new ArenaCanvasRenderer(canvasRef.current, { mode: "follow", viewportWidthCells: 96, viewportHeightCells: 54 });
-    const minimapRenderer = new ArenaCanvasRenderer(minimapCanvasRef.current, { mode: "minimap", viewportWidthCells: 96, viewportHeightCells: 54 });
+    const renderer = new ArenaCanvasRenderer(canvasRef.current, { mode: "follow", viewportWidthCells: DEFAULT_CAMERA_SIZE, viewportHeightCells: DEFAULT_CAMERA_SIZE });
+    const minimapRenderer = new ArenaCanvasRenderer(minimapCanvasRef.current, { mode: "minimap", viewportWidthCells: DEFAULT_CAMERA_SIZE, viewportHeightCells: DEFAULT_CAMERA_SIZE });
     rendererRef.current = renderer;
     minimapRendererRef.current = minimapRenderer;
     if (snapshot) {

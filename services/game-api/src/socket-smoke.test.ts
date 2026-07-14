@@ -41,6 +41,8 @@ describe("two-client Socket.IO and protected operations flow", () => {
     expect(createResponse.status).toBe(201);
     const created = await createResponse.json() as { room: RoomSnapshot; joinUrl: string };
     expect(created.joinUrl).toContain("http://demo.local/play/");
+    expect(created.room.config.gridWidth).toBe(40);
+    expect(created.room.config.gridHeight).toBe(40);
 
     const first = createClient(running.url, { transports: ["websocket"], reconnection: false });
     const second = createClient(running.url, { transports: ["websocket"], reconnection: false });

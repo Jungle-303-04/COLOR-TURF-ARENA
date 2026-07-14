@@ -15,10 +15,12 @@ import {
   type Vector2,
 } from "@paint-arena/shared";
 
+export const DEFAULT_WORLD_SIZE = 216;
+
 export const DEFAULT_GAME_CONFIG: GameConfig = {
   durationSeconds: 90,
-  gridWidth: 288,
-  gridHeight: 162,
+  gridWidth: DEFAULT_WORLD_SIZE,
+  gridHeight: DEFAULT_WORLD_SIZE,
   paintRadius: 2,
   playerSpeed: 18,
   releaseChannel: "stable",
@@ -199,8 +201,13 @@ export class GameRoom {
     if (this.status !== "lobby") throw new Error("Game settings can only be changed in the lobby.");
 
     this.config.durationSeconds = clamp(Math.round(next.durationSeconds ?? this.config.durationSeconds), 15, 300);
-    const width = clamp(Math.round(next.gridWidth ?? this.config.gridWidth), 40, 480);
-    const height = clamp(Math.round(next.gridHeight ?? this.config.gridHeight), 22, 270);
+    let width = this.config.gridWidth;
+    let height = this.config.gridHeight;
+    if (next.gridWidth !== undefined || next.gridHeight !== undefined) {
+      const size = clamp(Math.round(next.gridWidth ?? next.gridHeight ?? DEFAULT_WORLD_SIZE), 40, 270);
+      width = size;
+      height = size;
+    }
     const resized = width !== this.config.gridWidth || height !== this.config.gridHeight;
     this.config.gridWidth = width;
     this.config.gridHeight = height;

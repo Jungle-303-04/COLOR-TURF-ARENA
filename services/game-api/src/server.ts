@@ -27,7 +27,7 @@ import {
   type WatchResult,
 } from "@paint-arena/shared";
 import { BotManager } from "./bots.js";
-import { DEFAULT_GAME_CONFIG, type GameEvent, type GameRoom } from "./game.js";
+import { DEFAULT_GAME_CONFIG, DEFAULT_WORLD_SIZE, type GameEvent, type GameRoom } from "./game.js";
 import { KubernetesObserver } from "./kubernetes.js";
 import { createMetrics } from "./metrics.js";
 import { createSnapshotStorage, type SnapshotStorage } from "./snapshot-store.js";
@@ -94,10 +94,11 @@ const pushWindow = (values: number[], value: number, limit = 500) => {
 const createConfig = (body: Record<string, unknown> = {}): GameConfig => {
   const teamBody = typeof body.teams === "object" && body.teams ? body.teams as Record<string, Record<string, unknown>> : {};
   const releaseChannel = body.releaseChannel === "canary" ? "canary" : "stable";
+  const gridSize = Math.max(40, Math.min(270, Math.round(numeric(body.gridWidth ?? body.gridHeight, DEFAULT_WORLD_SIZE))));
   return {
     durationSeconds: Math.max(15, Math.min(300, Math.round(numeric(body.durationSeconds, DEFAULT_GAME_CONFIG.durationSeconds)))),
-    gridWidth: Math.max(40, Math.min(480, Math.round(numeric(body.gridWidth, DEFAULT_GAME_CONFIG.gridWidth)))),
-    gridHeight: Math.max(22, Math.min(270, Math.round(numeric(body.gridHeight, DEFAULT_GAME_CONFIG.gridHeight)))),
+    gridWidth: gridSize,
+    gridHeight: gridSize,
     paintRadius: Math.max(1, Math.min(5, Math.round(numeric(body.paintRadius, DEFAULT_GAME_CONFIG.paintRadius)))),
     playerSpeed: Math.max(5, Math.min(40, numeric(body.playerSpeed, DEFAULT_GAME_CONFIG.playerSpeed))),
     releaseChannel,

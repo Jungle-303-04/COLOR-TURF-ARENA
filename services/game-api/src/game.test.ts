@@ -11,11 +11,11 @@ const input = (roomCode: string, sessionId: string, sequence: number, sentAt: nu
 });
 
 describe("GameRoom server authority", () => {
-  it("uses an approximately three-times larger default turf", () => {
+  it("uses a square default turf with the same 46,656-cell load", () => {
     const room = new GameRoom("WORLD");
     const snapshot = room.snapshot();
-    expect(snapshot.config.gridWidth).toBe(288);
-    expect(snapshot.config.gridHeight).toBe(162);
+    expect(snapshot.config.gridWidth).toBe(216);
+    expect(snapshot.config.gridHeight).toBe(216);
     expect(snapshot.grid).toHaveLength(46_656);
   });
 
@@ -37,6 +37,27 @@ describe("GameRoom server authority", () => {
     expect(after).toBeGreaterThan(before);
     expect(after - before).toBeLessThanOrEqual(1.81);
     expect(room.snapshot().scores.cells.A).toBeGreaterThan(0);
+  });
+
+  it("moves at the same world speed on horizontal and vertical axes", () => {
+    let now = 1_500_000;
+    const horizontal = new GameRoom("SPEEDX", undefined, { now: () => now, random: () => 0.5 });
+    const vertical = new GameRoom("SPEEDY", undefined, { now: () => now, random: () => 0.5 });
+    const horizontalPlayer = horizontal.join("horizontal", "socket-x", "Horizontal").player;
+    const verticalPlayer = vertical.join("vertical", "socket-y", "Vertical").player;
+    horizontal.start();
+    vertical.start();
+    expect(horizontal.handleInput("horizontal", input("SPEEDX", "horizontal", 1, now, 1, 0)).ok).toBe(true);
+    expect(vertical.handleInput("vertical", input("SPEEDY", "vertical", 1, now, 0, 1)).ok).toBe(true);
+
+    now += 100;
+    horizontal.tick();
+    vertical.tick();
+
+    const movedX = horizontal.snapshot().players[0]!.position.x - horizontalPlayer.position.x;
+    const movedY = vertical.snapshot().players[0]!.position.y - verticalPlayer.position.y;
+    expect(movedX).toBeCloseTo(movedY, 6);
+    expect(movedX).toBeCloseTo(1.8, 6);
   });
 
   it("produces ordered deltas instead of repeating the full grid", () => {

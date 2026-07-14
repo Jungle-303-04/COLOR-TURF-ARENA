@@ -119,7 +119,7 @@ export const OpsPage = () => {
               <span className="sim-icon">≈</span><div><b>Tick latency</b><p>10Hz 게임 Tick에 실제 지연을 주입</p></div><strong>{simulation?.latencyMs ?? 0} ms</strong>
             </button>
             <button type="button" disabled={busy} className={simulation?.forceFullBroadcast ? "simulation-card is-active" : "simulation-card"} onClick={() => void runSimulation("full-broadcast")}>
-              <span className="sim-icon">▦</span><div><b>Full Broadcast</b><p>매 Tick 전체 288×162 Grid 전송</p></div><strong>{simulation?.forceFullBroadcast ? "FULL" : "DELTA"}</strong>
+              <span className="sim-icon">▦</span><div><b>Full Broadcast</b><p>매 Tick 전체 216×216 Grid 전송</p></div><strong>{simulation?.forceFullBroadcast ? "FULL" : "DELTA"}</strong>
             </button>
             <button type="button" disabled={busy} className={simulation?.activeCluster === "dr" ? "simulation-card is-active" : "simulation-card"} onClick={() => { if (window.confirm("Primary 장애 후 Redis Snapshot으로 DR 복구를 실행합니다.")) void runSimulation("primary-failure"); }}>
               <span className="sim-icon">↻</span><div><b>Primary → DR</b><p>Socket 종료 후 Snapshot 복구·자동 재접속</p></div><strong>{simulation?.activeCluster.toUpperCase() ?? "PRIMARY"}</strong>
