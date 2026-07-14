@@ -503,7 +503,7 @@ select, textarea { font: inherit; }
 .bot-control button { padding: .65rem .35rem; border: 1px solid var(--line); border-radius: .4rem; color: var(--text); background: #10111b; font-size: .52rem; font-weight: 900; }
 .bot-control span { color: var(--muted); font: 800 .5rem ui-monospace, monospace; }
 .announcement-control { display: grid; gap: .4rem; text-align: left; }
-.announcement-control > span::after { content: " · 2 SEC AUTO FADE"; color: var(--lime); }
+.announcement-control > span::after { content: " · 2초 후 자동 사라짐"; color: var(--lime); }
 .announcement-control textarea { min-height: 4.7rem; resize: vertical; }
 .announcement-control button { padding: .62rem; border: 0; border-radius: .4rem; color: #080811; background: var(--lime); font-size: .55rem; font-weight: 950; }
 
@@ -596,7 +596,7 @@ select, textarea { font: inherit; }
 
 @media (max-width: 540px) {
   .admin-canvas-open { padding-inline: .55rem; font-size: 0; }
-  .admin-canvas-open::before { content: "EXPAND ↗"; font-size: .48rem; }
+  .admin-canvas-open::before { content: "크게 보기 ↗"; font-size: .48rem; }
   .admin-canvas-modal-panel { max-height: 98svh; }
   .admin-canvas-modal-panel > header { align-items: flex-start; }
   .admin-canvas-modal-actions .live-chip { display: none; }

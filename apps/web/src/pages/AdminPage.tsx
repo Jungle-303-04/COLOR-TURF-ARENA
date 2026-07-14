@@ -51,7 +51,23 @@ const actionsByStatus: Record<RoomStatus, Array<"start" | "pause" | "resume" | "
   ended: ["start", "reset"],
 };
 
-const actionLabels = { start: "START GAME", pause: "PAUSE", resume: "RESUME", end: "END NOW", reset: "RESET" };
+const actionLabels = { start: "게임 시작", pause: "일시정지", resume: "계속하기", end: "즉시 종료", reset: "초기화", reassign: "팀 다시 배정" } as const;
+
+const roomStatusLabels: Record<RoomStatus, string> = {
+  lobby: "대기",
+  running: "진행 중",
+  paused: "일시정지",
+  ended: "종료",
+};
+
+const chaosLabels: Record<Parameters<typeof api.chaos>[0], string> = {
+  lag: "틱 지연 주입",
+  "full-broadcast": "전체 전송 전환",
+  "primary-failure": "주 서버 장애 및 DR 복구",
+  failover: "DR 전환",
+  "server-shutdown": "게임 서버 종료",
+  reset: "장애 효과 해제",
+};
 
 export const AdminPage = () => {
   const [tokenInput, setTokenInput] = useState(getAdminToken());
@@ -290,16 +306,16 @@ export const AdminPage = () => {
     });
     setRoom(created.room);
     selectRoom(created.room.roomCode);
-  }, `${settings.releaseChannel.toUpperCase()} Arena 생성 완료`);
+  }, `${settings.releaseChannel.toUpperCase()} 경기장 생성 완료`);
 
   const runAction = (action: "start" | "pause" | "resume" | "end" | "reset" | "reassign") => {
     if (!room) return;
-    void run(async () => { const result = await api.roomAction(room.roomCode, action); setRoom(result.room); }, `${action.toUpperCase()} 반영 완료`);
+    void run(async () => { const result = await api.roomAction(room.roomCode, action); setRoom(result.room); }, `${actionLabels[action]} 반영 완료`);
   };
 
   const runChaos = (action: Parameters<typeof api.chaos>[0], warning: string, body?: Record<string, unknown>) => {
     if (!window.confirm(`${warning}\n\n연결과 게임 상태에 영향을 줄 수 있습니다.`)) return;
-    void run(async () => { setOps(await api.chaos(action, body)); }, `${action} 실행 완료`);
+    void run(async () => { setOps(await api.chaos(action, body)); }, `${chaosLabels[action]} 완료`);
   };
 
   const joinUrl = room ? `${baseUrl}/play/${room.roomCode}` : "";
@@ -321,103 +337,103 @@ export const AdminPage = () => {
   const runBots = (action: "add" | "remove", requestedCount: number) => {
     if (!room) return;
     const count = Math.max(1, Math.min(500, Math.round(requestedCount)));
-    void run(() => api.bots(room.roomCode, action, count), `${count} bots ${action === "add" ? "added" : "removed"}`);
+    void run(() => api.bots(room.roomCode, action, count), `봇 ${count}개 ${action === "add" ? "추가" : "회수"} 완료`);
   };
 
-  if (!authorized) return <div className="admin-login-page"><div className="admin-login-card"><span className="panel-kicker">PROTECTED OPERATIONS</span><h1>Color Turf Control</h1><p>게임·Bot·Chaos API는 ADMIN_TOKEN으로 보호됩니다.</p><label><span>ADMIN TOKEN</span><input type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void login(); }} placeholder="demo-admin" /></label><button type="button" className="button button-primary button-block" onClick={() => void login()}>UNLOCK CONTROL ROOM</button>{error && <div className="notice-bar notice-error">{error}</div>}</div></div>;
+  if (!authorized) return <div className="admin-login-page"><div className="admin-login-card"><span className="panel-kicker">관리자 전용 운영</span><h1>컬러 터프 관리실</h1><p>게임·봇·장애 시연 API는 관리자 토큰으로 보호됩니다.</p><label><span>관리자 토큰</span><input type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void login(); }} placeholder="demo-admin" /></label><button type="button" className="button button-primary button-block" onClick={() => void login()}>관리자 화면 열기</button>{error && <div className="notice-bar notice-error">{error}</div>}</div></div>;
 
   return (
-    <AppShell eyebrow="GAME DIRECTOR / KUBERNETES OPERATIONS" title="Color Turf Control Room" actions={<>
-      <span className={`live-chip ${streamConnected ? "" : "is-offline"}`}><i /> {streamConnected ? `LIVE · ${updatesPerSecond} UPS` : "RECONNECTING"}</span>
-      <button className="button button-secondary admin-canvas-open" type="button" disabled={!room} onClick={() => setIsArenaModalOpen(true)}>EXPAND CANVAS ↗</button>
-      <button className="button button-ghost" type="button" onClick={logout}>LOCK</button>
+    <AppShell eyebrow="게임 디렉터 / KUBERNETES 운영" title="컬러 터프 관리실" actions={<>
+      <span className={`live-chip ${streamConnected ? "" : "is-offline"}`}><i /> {streamConnected ? `실시간 · 초당 ${updatesPerSecond}회` : "재연결 중"}</span>
+      <button className="button button-secondary admin-canvas-open" type="button" disabled={!room} onClick={() => setIsArenaModalOpen(true)}>캔버스 크게 보기 ↗</button>
+      <button className="button button-ghost" type="button" onClick={logout}>잠금</button>
     </>}>
       <div className="admin-layout color-turf-admin">
         <aside className="room-rail panel">
-          <div className="panel-heading"><div><span className="panel-kicker">ROOMS</span><h2>Arena 목록</h2></div><span className="count-badge">{rooms.length}</span></div>
-          <div className="room-list">{rooms.length === 0 && <p className="empty-copy">아직 생성된 방이 없습니다.</p>}{rooms.map((item) => <button type="button" key={item.roomCode} className={`room-list-item ${selectedCode === item.roomCode ? "is-selected" : ""}`} onClick={() => selectRoom(item.roomCode)}><span><b>{item.roomCode}</b><small>{item.releaseChannel.toUpperCase()} · {item.connectedPlayers}/{item.players}</small></span><StatusPill status={item.status} /></button>)}</div>
-          <div className="compact-create-fields"><label><span>RELEASE</span><select value={settings.releaseChannel} onChange={(event) => setSettings({ ...settings, releaseChannel: event.target.value as "stable" | "canary" })}><option value="stable">Stable v1.1.3 · Delta</option><option value="canary">Canary v1.2.0 · Full</option></select></label><label><span>DURATION</span><input type="number" min="15" max="300" value={settings.durationSeconds} onChange={(event) => setSettings({ ...settings, durationSeconds: Number(event.target.value) })} /></label></div>
-          <button className="button button-primary button-block" type="button" onClick={() => void createRoom()} disabled={busy}>＋ NEW ARENA</button>
+          <div className="panel-heading"><div><span className="panel-kicker">경기방</span><h2>경기장 목록</h2></div><span className="count-badge">{rooms.length}</span></div>
+          <div className="room-list">{rooms.length === 0 && <p className="empty-copy">아직 생성된 방이 없습니다.</p>}{rooms.map((item) => <button type="button" key={item.roomCode} className={`room-list-item ${selectedCode === item.roomCode ? "is-selected" : ""}`} onClick={() => selectRoom(item.roomCode)}><span><b>{item.roomCode}</b><small>{item.releaseChannel.toUpperCase()} · {item.connectedPlayers}/{item.players}명 연결</small></span><StatusPill status={item.status} locale="ko" /></button>)}</div>
+          <div className="compact-create-fields"><label><span>배포 채널</span><select value={settings.releaseChannel} onChange={(event) => setSettings({ ...settings, releaseChannel: event.target.value as "stable" | "canary" })}><option value="stable">Stable v1.1.3 · 델타 전송</option><option value="canary">Canary v1.2.0 · 전체 전송</option></select></label><label><span>경기 시간(초)</span><input type="number" min="15" max="300" value={settings.durationSeconds} onChange={(event) => setSettings({ ...settings, durationSeconds: Number(event.target.value) })} /></label></div>
+          <button className="button button-primary button-block" type="button" onClick={() => void createRoom()} disabled={busy}>＋ 새 경기장 만들기</button>
         </aside>
 
         <section className="admin-center">
           <div className="control-hero panel">
-            <div className="control-hero-top"><div><span className="panel-kicker">ACTIVE ARENA</span><div className="room-code-line"><h2>{room?.roomCode ?? "-----"}</h2>{room && <StatusPill status={room.status} />}</div><p>{room ? `${room.server.cluster.toUpperCase()} · ${room.server.releaseChannel.toUpperCase()} · ${room.server.version}` : "왼쪽에서 Arena를 생성하세요."}</p></div>{room && <div className="mini-score"><span style={{ color: room.config.teams.A.color }}>RED <b>{room.scores.percentage.A.toFixed(1)}%</b></span><i>VS</i><span style={{ color: room.config.teams.B.color }}>BLUE <b>{room.scores.percentage.B.toFixed(1)}%</b></span></div>}</div>
+            <div className="control-hero-top"><div><span className="panel-kicker">선택된 경기장</span><div className="room-code-line"><h2>{room?.roomCode ?? "-----"}</h2>{room && <StatusPill status={room.status} locale="ko" />}</div><p>{room ? `${room.server.cluster.toUpperCase()} · ${room.server.releaseChannel.toUpperCase()} · ${room.server.version}` : "왼쪽에서 경기장을 생성하세요."}</p></div>{room && <div className="mini-score"><span style={{ color: room.config.teams.A.color }}>빨강 <b>{room.scores.percentage.A.toFixed(1)}%</b></span><i>대결</i><span style={{ color: room.config.teams.B.color }}>파랑 <b>{room.scores.percentage.B.toFixed(1)}%</b></span></div>}</div>
 
-            {room && <><div className="admin-minimap-wrap"><canvas ref={canvasRef} className="admin-minimap" aria-label="관리자 실시간 미니 관전 화면" /><div className={`admin-stream-badge ${streamConnected ? "is-live" : ""}`}><i />{streamConnected ? `REALTIME ${updatesPerSecond} UPS` : "STREAM RECONNECTING"}</div><div className="admin-minimap-meta"><span>{room.config.gridWidth}×{room.config.gridHeight}</span><span>SEQ {room.sequence}</span><span>{room.server.broadcastMode.toUpperCase()}</span><span>UPDATED {formatTime(room.updatedAt)}</span></div></div><div className="admin-player-feed" aria-label="실시간 플레이어 위치"><div className="admin-player-feed-head"><span>LIVE PLAYER POSITIONS</span><small>서버 좌표 · 초당 {updatesPerSecond}회 갱신</small></div><div className="admin-player-feed-grid">{visiblePlayers.map((player) => <div className={`admin-player-live-row ${player.connected ? "" : "is-disconnected"}`} key={player.id}><i style={{ backgroundColor: room.config.teams[player.team].color }} /><div><b>{player.nickname}</b><small>{player.isBot ? "BOT" : "HUMAN"} · TEAM {player.team}</small></div><code>X {player.position.x.toFixed(1)} · Y {player.position.y.toFixed(1)}</code></div>)}</div>{room.players.length > visiblePlayers.length && <small className="admin-player-more">외 {room.players.length - visiblePlayers.length}명도 실시간 관제 중</small>}</div></>}
+            {room && <><div className="admin-minimap-wrap"><canvas ref={canvasRef} className="admin-minimap" aria-label="관리자 실시간 미니 관전 화면" /><div className={`admin-stream-badge ${streamConnected ? "is-live" : ""}`}><i />{streamConnected ? `실시간 · 초당 ${updatesPerSecond}회` : "스트림 재연결 중"}</div><div className="admin-minimap-meta"><span>{room.config.gridWidth}×{room.config.gridHeight}</span><span>순번 {room.sequence}</span><span>{room.server.broadcastMode === "delta" ? "델타 전송" : "전체 전송"}</span><span>갱신 {formatTime(room.updatedAt)}</span></div></div><div className="admin-player-feed" aria-label="실시간 플레이어 위치"><div className="admin-player-feed-head"><span>실시간 참가자 위치</span><small>서버 좌표 · 초당 {updatesPerSecond}회 갱신</small></div><div className="admin-player-feed-grid">{visiblePlayers.map((player) => <div className={`admin-player-live-row ${player.connected ? "" : "is-disconnected"}`} key={player.id}><i style={{ backgroundColor: room.config.teams[player.team].color }} /><div><b>{player.nickname}</b><small>{player.isBot ? "봇" : "참가자"} · {player.team === "A" ? "빨강 팀" : "파랑 팀"}</small></div><code>X {player.position.x.toFixed(1)} · Y {player.position.y.toFixed(1)}</code></div>)}</div>{room.players.length > visiblePlayers.length && <small className="admin-player-more">외 {room.players.length - visiblePlayers.length}명도 실시간 관제 중</small>}</div></>}
 
-            <div className="player-stat-grid"><div className="metric-tile"><span>HUMANS</span><strong>{room?.players.filter((player) => !player.isBot).length ?? 0}</strong><small>{room?.players.filter((player) => player.connected).length ?? 0} connected</small></div><div className="metric-tile team-a"><span>RED TEAM</span><strong>{playerCounts.A}</strong><small>{room?.scores.cells.A ?? 0} cells</small></div><div className="metric-tile team-b"><span>BLUE TEAM</span><strong>{playerCounts.B}</strong><small>{room?.scores.cells.B ?? 0} cells</small></div><div className="metric-tile"><span>BOTS</span><strong>{bots}</strong><small>real WebSocket clients</small></div></div>
+            <div className="player-stat-grid"><div className="metric-tile"><span>참가자</span><strong>{room?.players.filter((player) => !player.isBot).length ?? 0}</strong><small>{room?.players.filter((player) => player.connected).length ?? 0}명 연결</small></div><div className="metric-tile team-a"><span>빨강 팀</span><strong>{playerCounts.A}</strong><small>{room?.scores.cells.A ?? 0}칸</small></div><div className="metric-tile team-b"><span>파랑 팀</span><strong>{playerCounts.B}</strong><small>{room?.scores.cells.B ?? 0}칸</small></div><div className="metric-tile"><span>부하 봇</span><strong>{bots}</strong><small>실제 WebSocket 연결</small></div></div>
 
-            <div className="action-strip">{room ? actionsByStatus[room.status].map((action) => <button type="button" key={action} className={`button ${action === "start" || action === "resume" ? "button-primary" : action === "end" ? "button-danger" : "button-secondary"}`} disabled={busy} onClick={() => runAction(action)}>{actionLabels[action]}</button>) : <button className="button button-primary" type="button" onClick={() => void createRoom()}>CREATE FIRST ROOM</button>}<button className="button button-ghost" type="button" disabled={!room || busy} onClick={() => runAction("reassign")}>REASSIGN TEAMS</button></div>
+            <div className="action-strip">{room ? actionsByStatus[room.status].map((action) => <button type="button" key={action} className={`button ${action === "start" || action === "resume" ? "button-primary" : action === "end" ? "button-danger" : "button-secondary"}`} disabled={busy} onClick={() => runAction(action)}>{actionLabels[action]}</button>) : <button className="button button-primary" type="button" onClick={() => void createRoom()}>첫 경기장 만들기</button>}<button className="button button-ghost" type="button" disabled={!room || busy} onClick={() => runAction("reassign")}>{actionLabels.reassign}</button></div>
             <div className={`notice-bar ${error ? "notice-error" : ""}`}>{error || notice}</div>
           </div>
 
-          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">SERVICE OPERATIONS</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">ACTUAL METRICS</span></div><div className="service-metric-grid"><div><span>SOCKETS</span><strong>{ops?.server.connectedSockets ?? 0}</strong></div><div><span>TICK P95</span><strong>{formatNumber(ops?.server.metrics.tickP95Ms ?? 0, 1)}ms</strong></div><div><span>BROADCAST P95</span><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div><div><span>RTT P95</span><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div><div><span>PAYLOAD P95</span><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div><div><span>SNAPSHOT AGE</span><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}s</strong></div><div><span>VERSION</span><strong>{ops?.server.identity.version ?? "—"}</strong></div><div><span>CLUSTER</span><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div></div></section>
+          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">실측 지표</span></div><div className="service-metric-grid"><div><span>연결 소켓</span><strong>{ops?.server.connectedSockets ?? 0}</strong></div><div><span>게임 틱 P95</span><strong>{formatNumber(ops?.server.metrics.tickP95Ms ?? 0, 1)}ms</strong></div><div><span>전송 P95</span><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div><div><span>왕복 지연 P95</span><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div><div><span>상태 크기 P95</span><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div><div><span>스냅샷 경과</span><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div><div><span>버전</span><strong>{ops?.server.identity.version ?? "—"}</strong></div><div><span>클러스터</span><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div></div></section>
 
-          <section className="panel event-panel"><div className="panel-heading"><div><span className="panel-kicker">OPERATIONS TIMELINE</span><h2>배포·장애·복구 이벤트</h2></div><span className="live-chip"><i /> LIVE</span></div><ol className="event-list admin-timeline">{ops?.recentEvents.slice(0, 18).map((event) => <li key={event.id}><time>{formatTime(event.at)}</time><span className={`event-dot source-${event.source}`} /><div><b>{event.type}</b><p>{event.roomCode ? `[${event.roomCode}] ` : ""}{event.message}</p></div></li>)}</ol></section>
+          <section className="panel event-panel"><div className="panel-heading"><div><span className="panel-kicker">운영 이벤트 기록</span><h2>배포·장애·복구 이벤트</h2></div><span className="live-chip"><i /> 실시간</span></div><ol className="event-list admin-timeline">{ops?.recentEvents.slice(0, 18).map((event) => <li key={event.id}><time>{formatTime(event.at)}</time><span className={`event-dot source-${event.source}`} /><div><b>{event.type}</b><p>{event.roomCode ? `[${event.roomCode}] ` : ""}{event.message}</p></div></li>)}</ol></section>
 
-          <details className="panel chaos-panel"><summary><span><b>DEMO / CHAOS CONTROLS</b><small>실제 게임 상태에 영향을 주는 시연 전용 제어</small></span><span>EXPAND ▾</span></summary><div className="chaos-grid"><button type="button" onClick={() => runChaos("lag", "Tick 처리에 350ms 지연을 주입합니다.", { delayMs: 350 })}>TICK LAG 350ms</button><button type="button" onClick={() => runChaos("full-broadcast", "전체 Grid Broadcast 모드를 전환합니다.")}>TOGGLE FULL BROADCAST</button><button type="button" onClick={() => runChaos("primary-failure", "Primary 장애를 발생시키고 Redis Snapshot으로 DR 복구합니다.")}>PRIMARY FAILURE → DR</button><button type="button" onClick={() => runChaos("server-shutdown", "Game Server 종료를 요청합니다.")}>SERVER SHUTDOWN</button><button type="button" className="chaos-reset" onClick={() => runChaos("reset", "모든 Demo / Chaos 상태를 해제합니다.")}>CLEAR CHAOS</button></div><p>완전 무중단을 주장하지 않습니다. Socket이 끊긴 뒤 수 초 안에 자동 재접속하고 최근 Snapshot부터 복구하는 흐름입니다.</p></details>
+          <details className="panel chaos-panel"><summary><span><b>시연 / 장애 주입 제어</b><small>실제 게임 상태에 영향을 주는 시연 전용 제어</small></span><span>펼치기 ▾</span></summary><div className="chaos-grid"><button type="button" onClick={() => runChaos("lag", "게임 틱 처리에 350ms 지연을 주입합니다.", { delayMs: 350 })}>틱 지연 350ms</button><button type="button" onClick={() => runChaos("full-broadcast", "전체 그리드 전송 모드를 전환합니다.")}>전체 전송 전환</button><button type="button" onClick={() => runChaos("primary-failure", "주 서버 장애를 발생시키고 Redis 스냅샷으로 DR 복구합니다.")}>주 서버 장애 → DR</button><button type="button" onClick={() => runChaos("server-shutdown", "게임 서버 종료를 요청합니다.")}>게임 서버 종료</button><button type="button" className="chaos-reset" onClick={() => runChaos("reset", "모든 시연용 장애 상태를 해제합니다.")}>장애 효과 해제</button></div><p>완전 무중단을 주장하지 않습니다. 소켓이 끊긴 뒤 수 초 안에 자동 재접속하고 최근 스냅샷부터 복구하는 흐름입니다.</p></details>
           <section className="panel metric-history-panel">
             <div className="panel-heading">
-              <div><span className="panel-kicker">LIVE TRAFFIC HISTORY</span><h2>운영·부하 지표</h2></div>
-              <span className="actual-tag">LAST 120 SECONDS</span>
+              <div><span className="panel-kicker">실시간 트래픽 추이</span><h2>운영·부하 지표</h2></div>
+              <span className="actual-tag">최근 120초</span>
             </div>
             <div className="ops-health-strip">
-              <div><span>INPUTS / SEC</span><strong>{formatNumber(ops?.server.inputEventsPerSecond ?? 0)}</strong></div>
-              <div><span>INPUT P95</span><strong>{formatNumber(ops?.server.inputLatencyP95Ms ?? 0, 1)}ms</strong></div>
-              <div><span>REJECT RATE</span><strong>{formatNumber(ops?.server.metrics.inputRejectRate ?? 0, 2)}%</strong></div>
-              <div><span>EVENT LOOP P95</span><strong>{formatNumber(ops?.server.metrics.eventLoopLagP95Ms ?? 0, 1)}ms</strong></div>
-              <div><span>CPU</span><strong>{formatNumber(ops?.server.metrics.cpuPercent ?? 0, 1)}%</strong></div>
-              <div><span>RSS MEMORY</span><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
+              <div><span>초당 입력</span><strong>{formatNumber(ops?.server.inputEventsPerSecond ?? 0)}</strong></div>
+              <div><span>입력 지연 P95</span><strong>{formatNumber(ops?.server.inputLatencyP95Ms ?? 0, 1)}ms</strong></div>
+              <div><span>입력 거부율</span><strong>{formatNumber(ops?.server.metrics.inputRejectRate ?? 0, 2)}%</strong></div>
+              <div><span>이벤트 루프 P95</span><strong>{formatNumber(ops?.server.metrics.eventLoopLagP95Ms ?? 0, 1)}ms</strong></div>
+              <div><span>CPU 사용률</span><strong>{formatNumber(ops?.server.metrics.cpuPercent ?? 0, 1)}%</strong></div>
+              <div><span>RSS 메모리</span><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
             </div>
             <div className="metric-chart-grid">
-              <MetricChart title="INPUT THROUGHPUT" unit="/s" description="플레이어 이동 입력 처리량" color="#93ff4f" points={chartPoints((sample) => sample.inputRate)} decimals={0} />
-              <MetricChart title="CONNECTED SOCKETS" unit="" description="사람·관전자·봇 연결 수" color="#25a8ff" points={chartPoints((sample) => sample.sockets)} decimals={0} />
-              <MetricChart title="INPUT LATENCY P95" unit="ms" description="입력 수신부터 검증까지의 지연" color="#ffbf47" points={chartPoints((sample) => sample.inputLatency)} decimals={1} />
-              <MetricChart title="GAME TICK P95" unit="ms" description="게임 루프 한 회 처리 시간" color="#ff405a" points={chartPoints((sample) => sample.tick)} decimals={1} />
-              <MetricChart title="EVENT LOOP LAG P95" unit="ms" description="Node.js 이벤트 루프 정체" color="#c98cff" points={chartPoints((sample) => sample.eventLoopLag)} decimals={1} />
-              <MetricChart title="CPU UTILIZATION" unit="%" description="게임 서버 프로세스 CPU" color="#51e2c2" points={chartPoints((sample) => sample.cpu)} decimals={1} />
-              <MetricChart title="RSS MEMORY" unit="MB" description="게임 서버 실제 메모리 점유" color="#f28ac7" points={chartPoints((sample) => sample.memory)} decimals={1} />
-              <MetricChart title="STATE PAYLOAD P95" unit="KB" description="클라이언트 상태 전송 크기" color="#9eb5ff" points={chartPoints((sample) => sample.payload)} decimals={1} />
+              <MetricChart title="입력 처리량" unit="/초" description="플레이어 이동 입력 처리량" color="#93ff4f" points={chartPoints((sample) => sample.inputRate)} decimals={0} />
+              <MetricChart title="연결 소켓 수" unit="" description="사람·관전자·봇 연결 수" color="#25a8ff" points={chartPoints((sample) => sample.sockets)} decimals={0} />
+              <MetricChart title="입력 지연 P95" unit="ms" description="입력 수신부터 검증까지의 지연" color="#ffbf47" points={chartPoints((sample) => sample.inputLatency)} decimals={1} />
+              <MetricChart title="게임 틱 P95" unit="ms" description="게임 루프 한 회 처리 시간" color="#ff405a" points={chartPoints((sample) => sample.tick)} decimals={1} />
+              <MetricChart title="이벤트 루프 지연 P95" unit="ms" description="Node.js 이벤트 루프 정체" color="#c98cff" points={chartPoints((sample) => sample.eventLoopLag)} decimals={1} />
+              <MetricChart title="CPU 사용률" unit="%" description="게임 서버 프로세스 CPU" color="#51e2c2" points={chartPoints((sample) => sample.cpu)} decimals={1} />
+              <MetricChart title="RSS 메모리" unit="MB" description="게임 서버 실제 메모리 점유" color="#f28ac7" points={chartPoints((sample) => sample.memory)} decimals={1} />
+              <MetricChart title="상태 전송 크기 P95" unit="KB" description="클라이언트 상태 전송 크기" color="#9eb5ff" points={chartPoints((sample) => sample.payload)} decimals={1} />
             </div>
           </section>
 
           {room && <section className="panel bulk-bot-panel">
             <div className="panel-heading">
-              <div><span className="panel-kicker">WEBSOCKET LOAD GENERATOR</span><h2>대량 봇 부하 테스트</h2></div>
-              <span className="count-badge">{connectedBots}/{bots} ACTIVE</span>
+              <div><span className="panel-kicker">WebSocket 부하 생성기</span><h2>대량 봇 부하 테스트</h2></div>
+              <span className="count-badge">{connectedBots}/{bots}개 연결</span>
             </div>
             <p>각 봇은 실제 WebSocket으로 접속해 이동 입력을 보냅니다. 한 번에 최대 500개까지 추가하거나 회수할 수 있습니다.</p>
             <div className="bot-load-controls">
-              <label><span>BATCH SIZE</span><input type="number" min="1" max="500" value={botBatchSize} onChange={(event) => setBotBatchSize(Math.max(1, Math.min(500, Number(event.target.value) || 1)))} /></label>
-              <button type="button" className="button button-primary" disabled={busy} onClick={() => runBots("add", botBatchSize)}>ADD LOAD</button>
-              <button type="button" className="button button-secondary" disabled={busy || bots === 0} onClick={() => runBots("remove", botBatchSize)}>REMOVE</button>
-              <button type="button" className="button button-danger" disabled={busy || bots === 0} onClick={() => runBots("remove", 500)}>REMOVE ALL</button>
+              <label><span>한 번에 투입할 수</span><input type="number" min="1" max="500" value={botBatchSize} onChange={(event) => setBotBatchSize(Math.max(1, Math.min(500, Number(event.target.value) || 1)))} /></label>
+              <button type="button" className="button button-primary" disabled={busy} onClick={() => runBots("add", botBatchSize)}>봇 추가</button>
+              <button type="button" className="button button-secondary" disabled={busy || bots === 0} onClick={() => runBots("remove", botBatchSize)}>봇 회수</button>
+              <button type="button" className="button button-danger" disabled={busy || bots === 0} onClick={() => runBots("remove", 500)}>모두 회수</button>
             </div>
             <div className="bot-load-presets" aria-label="봇 수 빠른 선택">
-              {[50, 100, 250, 500].map((count) => <button type="button" key={count} className={botBatchSize === count ? "is-selected" : ""} onClick={() => setBotBatchSize(count)}>{count} BOTS</button>)}
+              {[50, 100, 250, 500].map((count) => <button type="button" key={count} className={botBatchSize === count ? "is-selected" : ""} onClick={() => setBotBatchSize(count)}>{count}개 봇</button>)}
             </div>
           </section>}
         </section>
 
         <aside className="join-panel panel admin-actions-panel">
-          <div className="panel-heading"><div><span className="panel-kicker">MOBILE ENTRY</span><h2>QR & 운영 이벤트</h2></div></div>
-          {room ? <><div className="qr-frame"><QrCode value={joinUrl} label={`방 ${room.roomCode} 입장`} size={210} /></div><strong className="join-room-code">{room.roomCode}</strong><div className="url-box"><span>PLAY URL</span><code>{joinUrl}</code></div><a className="button button-secondary button-block" href={watchUrl} target="_blank" rel="noreferrer">OPEN WATCH SCREEN ↗</a><div className="admin-event-actions"><button className="button boost-button button-block" type="button" disabled={busy} onClick={() => void run(async () => { const result = await api.paintBoost(room.roomCode); setRoom(result.room); }, "Paint Boost ×2 시작")}>PAINT BOOST ×2 · 10s</button><div className="bot-control"><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "remove", 5), "Bot 제거 완료")}>− 5 BOTS</button><span>{bots} ACTIVE</span><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "add", 5), "Bot 추가 완료")}>＋ 5 BOTS</button></div><label className="announcement-control"><span>ANNOUNCEMENT</span><textarea maxLength={160} value={announcement} onChange={(event) => setAnnouncement(event.target.value)} placeholder="관전/플레이 화면 공지" /><button type="button" onClick={() => void run(async () => { const result = await api.announcement(room.roomCode, announcement); setRoom(result.room); }, "공지 전송 완료")}>SEND</button></label></div></> : <div className="qr-empty"><div className="qr-placeholder-icon">＋</div><h3>NO ACTIVE ROOM</h3><p>Arena를 만들면 입장 QR과 운영 이벤트가 표시됩니다.</p></div>}
+          <div className="panel-heading"><div><span className="panel-kicker">모바일 참가</span><h2>QR과 운영 기능</h2></div></div>
+          {room ? <><div className="qr-frame"><QrCode value={joinUrl} label={`방 ${room.roomCode} 입장`} size={210} /></div><strong className="join-room-code">{room.roomCode}</strong><div className="url-box"><span>참가 링크</span><code>{joinUrl}</code></div><a className="button button-secondary button-block" href={watchUrl} target="_blank" rel="noreferrer">관전 화면 열기 ↗</a><div className="admin-event-actions"><button className="button boost-button button-block" type="button" disabled={busy} onClick={() => void run(async () => { const result = await api.paintBoost(room.roomCode); setRoom(result.room); }, "페인트 강화 ×2 시작")}>페인트 강화 ×2 · 10초</button><div className="bot-control"><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "remove", 5), "봇 5개 회수 완료")}>− 봇 5개</button><span>{bots}개 활성</span><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "add", 5), "봇 5개 추가 완료")}>＋ 봇 5개</button></div><label className="announcement-control"><span>운영 공지</span><textarea maxLength={160} value={announcement} onChange={(event) => setAnnouncement(event.target.value)} placeholder="관전/플레이 화면 공지" /><button type="button" onClick={() => void run(async () => { const result = await api.announcement(room.roomCode, announcement); setRoom(result.room); }, "공지 전송 완료")}>전송</button></label></div></> : <div className="qr-empty"><div className="qr-placeholder-icon">＋</div><h3>활성 경기장 없음</h3><p>경기장을 만들면 입장 QR과 운영 기능이 표시됩니다.</p></div>}
         </aside>
       </div>
       {isArenaModalOpen && room && <div className="admin-canvas-modal" role="dialog" aria-modal="true" aria-label={`${room.roomCode} 실시간 확대 관전`} onMouseDown={(event) => { if (event.target === event.currentTarget) setIsArenaModalOpen(false); }}>
         <section className="admin-canvas-modal-panel panel">
           <header>
-            <div><span className="panel-kicker">LIVE ARENA OVERVIEW</span><h2>{room.roomCode} · 전체 캔버스 관전</h2></div>
-            <div className="admin-canvas-modal-actions"><span className={`live-chip ${streamConnected ? "" : "is-offline"}`}><i /> {updatesPerSecond} UPS</span><button type="button" autoFocus aria-label="확대 관전 닫기" onClick={() => setIsArenaModalOpen(false)}>CLOSE ×</button></div>
+            <div><span className="panel-kicker">실시간 경기장 전체 보기</span><h2>{room.roomCode} · 전체 캔버스 관전</h2></div>
+            <div className="admin-canvas-modal-actions"><span className={`live-chip ${streamConnected ? "" : "is-offline"}`}><i /> 초당 {updatesPerSecond}회</span><button type="button" autoFocus aria-label="확대 관전 닫기" onClick={() => setIsArenaModalOpen(false)}>닫기 ×</button></div>
           </header>
           <div className="admin-canvas-modal-stage"><canvas ref={modalCanvasRef} aria-label="관리자 전체 월드 실시간 확대 관전 화면" />{room.announcement && <div className="watch-announcement">{room.announcement}</div>}</div>
           <footer>
-            <span><small>WORLD</small><b>{room.config.gridWidth}×{room.config.gridHeight}</b></span>
-            <span><small>STATUS</small><b>{room.status.toUpperCase()} · {formatTimer(room.remainingMs)}</b></span>
-            <span style={{ color: room.config.teams.A.color }}><small>RED</small><b>{room.scores.percentage.A.toFixed(1)}% · {playerCounts.A} players</b></span>
-            <span style={{ color: room.config.teams.B.color }}><small>BLUE</small><b>{room.scores.percentage.B.toFixed(1)}% · {playerCounts.B} players</b></span>
-            <span><small>LOAD</small><b>{bots} bots · {ops?.server.connectedSockets ?? 0} sockets</b></span>
+            <span><small>월드</small><b>{room.config.gridWidth}×{room.config.gridHeight}</b></span>
+            <span><small>상태</small><b>{roomStatusLabels[room.status]} · {formatTimer(room.remainingMs)}</b></span>
+            <span style={{ color: room.config.teams.A.color }}><small>빨강</small><b>{room.scores.percentage.A.toFixed(1)}% · {playerCounts.A}명</b></span>
+            <span style={{ color: room.config.teams.B.color }}><small>파랑</small><b>{room.scores.percentage.B.toFixed(1)}% · {playerCounts.B}명</b></span>
+            <span><small>부하</small><b>봇 {bots}개 · 소켓 {ops?.server.connectedSockets ?? 0}개</b></span>
           </footer>
         </section>
       </div>}
