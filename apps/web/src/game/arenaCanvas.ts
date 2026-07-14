@@ -1,6 +1,7 @@
-import type { PlayerPublic, RoomSnapshot, TeamId } from "@paint-arena/shared";
+import type { PlayerPublic, RoomSnapshot, TeamId, Vector2 } from "@paint-arena/shared";
 
 export const DEFAULT_CAMERA_SIZE = 72;
+export const POSITION_INTERPOLATION_MS = 100;
 
 /*
  * Canvas responsibility pattern adapted from over-engineer/Socket.io-whiteboard
@@ -30,6 +31,14 @@ export interface CanvasFit {
 }
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
+
+export const interpolatePosition = (from: Vector2, to: Vector2, progress: number): Vector2 => {
+  const amount = clamp(progress, 0, 1);
+  return {
+    x: from.x + (to.x - from.x) * amount,
+    y: from.y + (to.y - from.y) * amount,
+  };
+};
 
 export const getCanvasFit = (canvasWidth: number, canvasHeight: number, viewportWidth: number, viewportHeight: number): CanvasFit => {
   const cellSize = Math.min(canvasWidth / viewportWidth, canvasHeight / viewportHeight);
@@ -71,6 +80,10 @@ export class ArenaCanvasRenderer {
   private focusPlayerId: string | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private previousPositions = new Map<string, { x: number; y: number }>();
+  private renderedPositions = new Map<string, { x: number; y: number }>();
+  private interpolationStartedAt = 0;
+  private interpolationActive = false;
+  private animationFrame: number | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: ArenaCanvasOptions = {}) {
     const context = canvas.getContext("2d", { alpha: false });
@@ -84,15 +97,34 @@ export class ArenaCanvasRenderer {
   }
 
   update(snapshot: RoomSnapshot, focusPlayerId?: string | null): void {
-    this.previousPositions = new Map(this.snapshot?.players.map((player) => [player.id, { ...player.position }]) ?? []);
+    this.previousPositions = this.renderedPositions.size > 0
+      ? new Map([...this.renderedPositions].map(([id, position]) => [id, { ...position }]))
+      : new Map(this.snapshot?.players.map((player) => [player.id, { ...player.position }]) ?? []);
     this.snapshot = snapshot;
     this.focusPlayerId = focusPlayerId ?? null;
-    this.draw();
+    this.interpolationStartedAt = performance.now();
+    this.interpolationActive = this.mode === "follow" && snapshot.players.some((player) => {
+      const previous = this.previousPositions.get(player.id);
+      return previous && (Math.abs(previous.x - player.position.x) > 0.001 || Math.abs(previous.y - player.position.y) > 0.001);
+    });
+    this.draw(this.interpolationStartedAt);
+    if (this.interpolationActive) this.requestNextFrame();
   }
 
   destroy(): void {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame);
+    this.animationFrame = null;
+  }
+
+  private readonly animate = (timestamp: number) => {
+    this.animationFrame = null;
+    if (this.draw(timestamp)) this.requestNextFrame();
+  };
+
+  private requestNextFrame(): void {
+    if (this.animationFrame === null) this.animationFrame = requestAnimationFrame(this.animate);
   }
 
   private resizeBackingStore(): { width: number; height: number } {
@@ -114,14 +146,20 @@ export class ArenaCanvasRenderer {
     return getCameraViewport(gridWidth, gridHeight, focus.position.x, focus.position.y, this.viewportWidthCells, this.viewportHeightCells);
   }
 
-  private draw(): void {
+  private draw(timestamp = performance.now()): boolean {
     const snapshot = this.snapshot;
-    if (!snapshot) return;
+    if (!snapshot) return false;
     const { width, height } = this.resizeBackingStore();
     const ctx = this.context;
     const { gridWidth, gridHeight, teams } = snapshot.config;
     const focus = snapshot.players.find((player) => player.id === this.focusPlayerId);
-    const viewport = this.viewport(snapshot, focus);
+    const progress = this.interpolationActive ? clamp((timestamp - this.interpolationStartedAt) / POSITION_INTERPOLATION_MS, 0, 1) : 1;
+    const renderPositions = new Map(snapshot.players.map((player) => {
+      const previous = this.previousPositions.get(player.id) ?? player.position;
+      return [player.id, interpolatePosition(previous, player.position, progress)] as const;
+    }));
+    const renderFocus = focus ? { ...focus, position: renderPositions.get(focus.id) ?? focus.position } : undefined;
+    const viewport = this.viewport(snapshot, renderFocus);
     const { cellSize, renderWidth, renderHeight, offsetX, offsetY } = getCanvasFit(width, height, viewport.width, viewport.height);
     const startX = Math.max(0, Math.floor(viewport.left));
     const endX = Math.min(gridWidth, Math.ceil(viewport.left + viewport.width));
@@ -151,9 +189,10 @@ export class ArenaCanvasRenderer {
     ctx.lineWidth = 1;
     ctx.strokeRect(offsetX + 0.5, offsetY + 0.5, renderWidth - 1, renderHeight - 1);
     for (const player of snapshot.players) {
-      if (player.position.x < viewport.left - 1 || player.position.x > viewport.left + viewport.width + 1 || player.position.y < viewport.top - 1 || player.position.y > viewport.top + viewport.height + 1) continue;
-      const centerX = toCanvasX(player.position.x);
-      const centerY = toCanvasY(player.position.y);
+      const renderPosition = renderPositions.get(player.id) ?? player.position;
+      if (renderPosition.x < viewport.left - 1 || renderPosition.x > viewport.left + viewport.width + 1 || renderPosition.y < viewport.top - 1 || renderPosition.y > viewport.top + viewport.height + 1) continue;
+      const centerX = toCanvasX(renderPosition.x);
+      const centerY = toCanvasY(renderPosition.y);
       const team = teams[player.team as TeamId];
       const radius = this.mode === "minimap" ? Math.max(2, Math.min(renderWidth / 90, 5)) : this.mode === "follow" ? Math.max(7, Math.min(renderWidth / 34, 15)) : Math.max(4, Math.min(renderWidth / 60, 12));
       ctx.save();
@@ -228,5 +267,8 @@ export class ArenaCanvasRenderer {
       ctx.fillStyle = vignette;
       ctx.fillRect(offsetX, offsetY, renderWidth, renderHeight);
     }
+    this.renderedPositions = renderPositions;
+    if (progress >= 1) this.interpolationActive = false;
+    return this.interpolationActive;
   }
 }
