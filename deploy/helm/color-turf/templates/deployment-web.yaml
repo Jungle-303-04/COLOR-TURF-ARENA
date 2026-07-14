@@ -21,6 +21,7 @@ spec:
         color-turf/release-channel: stable
         color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
     spec:
+      priorityClassName: {{ .Values.priorityClass.name }}
       containers:
         - name: web
           image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
@@ -30,6 +31,9 @@ spec:
           livenessProbe:
             httpGet: { path: /admin, port: http }
           readinessProbe:
-            httpGet: { path: /admin, port: http }
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 1
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}

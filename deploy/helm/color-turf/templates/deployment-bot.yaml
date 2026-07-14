@@ -21,9 +21,11 @@ spec:
         color-turf/release-channel: stable
         color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
     spec:
+      priorityClassName: {{ .Values.priorityClass.name }}
       containers:
         - name: bot
           image: "{{ .Values.bot.image.repository }}:{{ .Values.bot.image.tag }}"
+          imagePullPolicy: IfNotPresent
           args: ["--room", {{ required "bot.room is required when bot.enabled=true" .Values.bot.room | quote }}, "--count", {{ .Values.bot.count | quote }}, "--server", "http://server-stable:3001"]
           resources:
             requests: { cpu: 25m, memory: 32Mi }

@@ -19,6 +19,7 @@ spec:
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: redis
     spec:
+      priorityClassName: {{ .Values.priorityClass.name }}
       containers:
         - name: redis
           image: {{ .Values.redis.image | quote }}

@@ -9,7 +9,9 @@ metadata:
     color-turf/release-channel: stable
     color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
 spec:
+  {{- if not .Values.hpa.enabled }}
   replicas: {{ .Values.server.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/instance: {{ .Release.Name }}
@@ -25,6 +27,7 @@ spec:
         color-turf/release-channel: stable
         color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
     spec:
+      priorityClassName: {{ .Values.priorityClass.name }}
       serviceAccountName: {{ include "color-turf.fullname" . }}
       terminationGracePeriodSeconds: 20
       containers:
@@ -35,7 +38,7 @@ spec:
             - { name: http, containerPort: 3001 }
           envFrom:
             - configMapRef: { name: {{ include "color-turf.fullname" . }}-config }
-            - secretRef: { name: {{ include "color-turf.fullname" . }}-auth }
+            - secretRef: { name: {{ include "color-turf.authSecretName" . }} }
           env:
             - { name: SERVER_VERSION, value: {{ .Values.server.version | quote }} }
             - { name: RELEASE_CHANNEL, value: stable }
@@ -49,8 +52,9 @@ spec:
             periodSeconds: 5
           readinessProbe:
             httpGet: { path: /readyz, port: http }
-            initialDelaySeconds: 3
-            periodSeconds: 3
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 1
           lifecycle:
             preStop:
               exec: { command: ["sh", "-c", "sleep 5"] }
