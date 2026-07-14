@@ -1,0 +1,6 @@
+canary:
+  enabled: true
+  replicas: 1
+  version: v1.2.0
+  broadcastMode: full
+  tickDelayMs: 250

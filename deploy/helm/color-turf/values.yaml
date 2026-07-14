@@ -1,0 +1,83 @@
+nameOverride: ""
+fullnameOverride: ""
+
+server:
+  image:
+    repository: color-turf-game-server
+    tag: local
+    pullPolicy: IfNotPresent
+  replicas: 1
+  version: v1.1.3
+  gitSha: local
+  clusterName: primary
+  releaseChannel: stable
+  broadcastMode: delta
+  tickDelayMs: 0
+  snapshotIntervalMs: 1000
+  redisUrl: redis://redis:6379
+  publicBaseUrl: http://localhost:30080
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+canary:
+  enabled: false
+  replicas: 1
+  version: v1.2.0
+  broadcastMode: full
+  tickDelayMs: 250
+
+web:
+  image:
+    repository: color-turf-web
+    tag: local
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+
+redis:
+  install: true
+  image: redis:8.2-alpine
+  persistence:
+    enabled: false
+    size: 1Gi
+
+bot:
+  enabled: false
+  image:
+    repository: color-turf-bot
+    tag: local
+  room: ""
+  count: 20
+
+auth:
+  adminToken: demo-admin
+  opsEventToken: demo-ops
+  opsPlatformWebhookUrl: ""
+  opsPlatformWebhookToken: ""
+
+service:
+  type: NodePort
+  webPort: 8080
+  nodePort: 30080
+
+ingress:
+  enabled: false
+  className: ""
+  host: color-turf.local
+
+serviceMonitor:
+  enabled: false
+  interval: 5s
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70

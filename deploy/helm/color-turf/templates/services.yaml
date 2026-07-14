@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-stable
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: stable
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: stable
+  ports:
+    - { name: http, port: 3001, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "color-turf.fullname" . }}-web
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: {{ .Values.service.webPort }}
+      targetPort: http
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+{{- if .Values.canary.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-canary
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: canary
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: canary
+  ports:
+    - { name: http, port: 3001, targetPort: http }
+{{- end }}

@@ -1,0 +1,26 @@
+{
+  "name": "paint-arena-ops-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QR-powered server-authoritative multiplayer paint game and Kubernetes operations demo",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @paint-arena/shared && npm run build -w @paint-arena/game-api && npm run build -w @paint-arena/bot && npm run build -w @paint-arena/web",
+    "dev": "npm run build -w @paint-arena/shared && concurrently -n api,web -c magenta,cyan \"npm run dev -w @paint-arena/game-api\" \"npm run dev -w @paint-arena/web\"",
+    "start": "npm run start -w @paint-arena/game-api",
+    "test": "npm run build -w @paint-arena/shared && npm run test -w @paint-arena/game-api && npm run test -w @paint-arena/web",
+    "typecheck": "npm run typecheck -w @paint-arena/shared && npm run typecheck -w @paint-arena/game-api && npm run typecheck -w @paint-arena/bot && npm run typecheck -w @paint-arena/web",
+    "bot": "npm run dev -w @paint-arena/bot --"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

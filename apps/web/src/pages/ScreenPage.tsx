@@ -1,0 +1,111 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
+import type { EventLogEntry, RoomSnapshot, StateDelta, TeamId, WatchResult } from "@paint-arena/shared";
+import { BrandMark } from "../components/AppShell";
+import { QrCode } from "../components/QrCode";
+import { StatusPill } from "../components/StatusPill";
+import { ArenaCanvasRenderer } from "../game/arenaCanvas";
+import { api } from "../lib/api";
+import { formatTime, formatTimer } from "../lib/format";
+import { createSocket } from "../lib/socket";
+import { applyStateDelta } from "../lib/state";
+
+export const ScreenPage = () => {
+  const { roomCode: rawCode = "" } = useParams();
+  const roomCode = rawCode.toUpperCase();
+  const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
+  const [baseUrl, setBaseUrl] = useState(window.location.origin);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState("");
+  const [timeline, setTimeline] = useState<EventLogEntry[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rendererRef = useRef<ArenaCanvasRenderer | null>(null);
+
+  useEffect(() => {
+    void api.config().then((config) => setBaseUrl(config.publicBaseUrl)).catch(() => undefined);
+    const socket = createSocket();
+    const watch = () => socket.emit("spectator_subscribe", { roomCode }, (result: WatchResult) => {
+      if (result.ok && result.snapshot) { setSnapshot(result.snapshot); setError(""); }
+      else setError(result.error ?? "방을 찾지 못했습니다.");
+    });
+    socket.on("connect", () => { setConnected(true); watch(); });
+    socket.on("disconnect", () => setConnected(false));
+    socket.on("room_snapshot", (next: RoomSnapshot) => setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current));
+    socket.on("state_delta", (delta: StateDelta) => setSnapshot((current) => applyStateDelta(current, delta)));
+    socket.on("ops_event", (event: EventLogEntry) => setTimeline((current) => [event, ...current.filter((item) => item.id !== event.id)].slice(0, 8)));
+    socket.connect();
+    void api.ops().then((ops) => setTimeline(ops.recentEvents.slice(0, 8))).catch(() => undefined);
+    return () => { socket.disconnect(); };
+  }, [roomCode]);
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    const renderer = new ArenaCanvasRenderer(canvasRef.current);
+    rendererRef.current = renderer;
+    if (snapshot) renderer.update(snapshot);
+    return () => { renderer.destroy(); rendererRef.current = null; };
+  }, [Boolean(snapshot)]);
+
+  useEffect(() => { if (snapshot) rendererRef.current?.update(snapshot); }, [snapshot]);
+
+  const counts = useMemo(() => {
+    const result: Record<TeamId, number> = { A: 0, B: 0 };
+    snapshot?.players.forEach((player) => { result[player.team] += 1; });
+    return result;
+  }, [snapshot]);
+
+  const joinUrl = `${baseUrl}/play/${roomCode}`;
+  const winnerName = snapshot?.winner && snapshot.winner !== "draw" ? snapshot.config.teams[snapshot.winner].name : null;
+  const humans = snapshot?.players.filter((player) => !player.isBot).length ?? 0;
+  const bots = snapshot?.players.filter((player) => player.isBot).length ?? 0;
+  const degraded = snapshot?.server.broadcastMode === "full";
+
+  return (
+    <div className="screen-page">
+      <header className="screen-header">
+        <BrandMark />
+        <div className="screen-room-id"><span>ROOM</span><strong>{roomCode || "-----"}</strong></div>
+        <div className="screen-health">
+          {degraded && <span className="degraded-chip">DEGRADED · FULL BROADCAST</span>}
+          <span className={connected ? "is-connected" : "is-disconnected"}><i />{connected ? "LIVE SYNC" : "RECONNECTING"}</span>
+          <button type="button" className="fullscreen-button" onClick={() => void document.documentElement.requestFullscreen?.()}>FULLSCREEN</button>
+        </div>
+      </header>
+
+      {error && <div className="screen-error"><p className="eyebrow">ARENA UNAVAILABLE</p><h1>{error}</h1><p>운영자 콘솔에서 방 코드를 확인하세요.</p></div>}
+
+      {snapshot && <>
+        <section className="score-ribbon">
+          <div className="team-score team-score-a" style={{ "--team-color": snapshot.config.teams.A.color } as React.CSSProperties}>
+            <div><span>RED · {snapshot.config.teams.A.name}</span><strong>{snapshot.scores.cells.A}</strong></div><b>{snapshot.scores.percentage.A.toFixed(1)}%</b>
+          </div>
+          <div className="match-clock"><StatusPill status={snapshot.status} /><strong>{formatTimer(snapshot.remainingMs)}</strong><span>{humans} HUMANS · {bots} BOTS</span></div>
+          <div className="team-score team-score-b" style={{ "--team-color": snapshot.config.teams.B.color } as React.CSSProperties}>
+            <b>{snapshot.scores.percentage.B.toFixed(1)}%</b><div><span>BLUE · {snapshot.config.teams.B.name}</span><strong>{snapshot.scores.cells.B}</strong></div>
+          </div>
+        </section>
+
+        <main className="arena-stage watch-arena-stage">
+          <canvas ref={canvasRef} className="arena-canvas" aria-label="서버 상태로 렌더링한 Color Turf Arena" />
+          <div className="arena-vignette" />
+
+          {snapshot.status === "lobby" && <div className="lobby-overlay">
+            <div className="lobby-copy"><p className="eyebrow">READY FOR PLAYERS</p><h1>SCAN. JOIN.<br /><span>PAINT THE TURF.</span></h1><p>휴대폰으로 QR을 스캔하면 인원이 적은 팀에 자동 배정됩니다.</p><div className="lobby-teams"><span style={{ color: snapshot.config.teams.A.color }}><i /> RED <b>{counts.A}</b></span><span style={{ color: snapshot.config.teams.B.color }}><i /> BLUE <b>{counts.B}</b></span></div></div>
+            <div className="big-qr-card"><QrCode value={joinUrl} label={`방 ${roomCode} 모바일 입장`} size={260} /><span>ROOM CODE</span><strong>{roomCode}</strong><p>{joinUrl}</p></div>
+          </div>}
+
+          {snapshot.status === "paused" && <div className="state-overlay pause-overlay"><span>GAME PAUSED</span><h1>잠시 멈춤</h1><p>운영자가 곧 경기를 재개합니다.</p></div>}
+          {snapshot.status === "ended" && <div className="state-overlay result-overlay"><p className="eyebrow">MATCH COMPLETE</p><h1 style={{ color: snapshot.winner === "draw" || !snapshot.winner ? "#ffffff" : snapshot.config.teams[snapshot.winner].color }}>{snapshot.winner === "draw" ? "DRAW" : `${winnerName} WINS`}</h1><div className="result-score"><div><span>RED</span><strong>{snapshot.scores.cells.A}</strong><small>{snapshot.scores.percentage.A.toFixed(1)}%</small></div><b>FINAL</b><div><span>BLUE</span><strong>{snapshot.scores.cells.B}</strong><small>{snapshot.scores.percentage.B.toFixed(1)}%</small></div></div><p>{humans}명 참가 · {bots} bots · {snapshot.scores.paintedCells} cells painted</p></div>}
+
+          {snapshot.activeEvents.some((event) => event.type === "paint-boost") && <div className="watch-event-toast"><b>PAINT BOOST ×2</b><span>모든 플레이어 Paint 반경 증가</span></div>}
+          {snapshot.announcement && <div className="watch-announcement">{snapshot.announcement}</div>}
+
+          <aside className="watch-timeline"><span>LIVE OPERATIONS</span>{timeline.slice(0, 5).map((event) => <article key={event.id}><time>{formatTime(event.at)}</time><div><b>{event.type}</b><p>{event.message}</p></div></article>)}</aside>
+          <div className="arena-corner-label"><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()}</span><b>{snapshot.server.version}</b></div>
+        </main>
+
+        <footer className="screen-footer"><span><i className="legend-dot" style={{ background: snapshot.config.teams.A.color }} />SERVER AUTHORITATIVE · 10Hz</span><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()} · {snapshot.server.broadcastMode.toUpperCase()}</span><span><i className="legend-dot" style={{ background: snapshot.config.teams.B.color }} />SEQUENCE {snapshot.sequence}</span></footer>
+      </>}
+    </div>
+  );
+};

@@ -1,0 +1,8 @@
+server:
+  clusterName: primary
+  releaseChannel: stable
+  broadcastMode: delta
+  version: v1.1.3
+
+canary:
+  enabled: false
