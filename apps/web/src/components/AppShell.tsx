@@ -19,7 +19,6 @@ export const AppShell = ({ title, eyebrow, actions, children }: {
     <header className="topbar">
       <BrandMark />
       <nav aria-label="운영 메뉴">
-        <NavLink to="/admin">관리자</NavLink>
         <NavLink to="/ops">운영 현황</NavLink>
       </nav>
       <div className="topbar-actions">{actions}</div>
