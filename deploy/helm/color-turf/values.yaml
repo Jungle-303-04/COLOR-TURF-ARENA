@@ -18,7 +18,7 @@ server:
   publicBaseUrl: ""
   resources:
     requests: { cpu: 100m, memory: 128Mi }
-    limits: { cpu: 1000m, memory: 512Mi }
+    limits: { cpu: 2000m, memory: 512Mi }
 
 canary:
   enabled: false
@@ -84,7 +84,7 @@ hpa:
   enabled: true
   minReplicas: 2
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
+  targetCPUUtilizationPercentage: 50
   scaleUp:
     stabilizationWindowSeconds: 0
   scaleDown:
