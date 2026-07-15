@@ -1,8 +1,30 @@
 server:
-  clusterName: primary
+  clusterName: cluster-2
+  publicBaseUrl: https://game.woonyong.org
+  singleUseGame: true
   releaseChannel: stable
   broadcastMode: delta
   version: v1.1.3
+  image:
+    tag: demo-20260715-live-room-lock-1343
+    digest: sha256:ec8861641c8c8115fb1532b4ac99920dab11f61a9aa5802279d3f9e4a989d70d
+
+web:
+  image:
+    tag: demo-20260715-real-oom-105135
+    digest: sha256:1c9485b9046faf01d0a0a2b34287b61b306cfc36692ae58723ab52282e8842ab
+
+chaos:
+  allowPodOom: true
+
+opsiaRecovery:
+  enabled: true
+  agentServiceAccount:
+    name: cluster-agent
+    namespace: target
 
 canary:
   enabled: false
+
+auth:
+  demoAdminAuthDisabled: true

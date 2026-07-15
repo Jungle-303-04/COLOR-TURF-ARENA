@@ -32,7 +32,7 @@ spec:
       terminationGracePeriodSeconds: 20
       containers:
         - name: server
-          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          image: {{ include "color-turf.serverImage" . | quote }}
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 3001 }

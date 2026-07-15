@@ -22,3 +22,19 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- required "auth.existingSecret is required when auth.create=false" .Values.auth.existingSecret -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "color-turf.serverImage" -}}
+{{- if .Values.server.image.digest -}}
+{{- printf "%s@%s" .Values.server.image.repository .Values.server.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.server.image.repository .Values.server.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "color-turf.webImage" -}}
+{{- if .Values.web.image.digest -}}
+{{- printf "%s@%s" .Values.web.image.repository .Values.web.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.web.image.repository .Values.web.image.tag -}}
+{{- end -}}
+{{- end -}}

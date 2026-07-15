@@ -1,0 +1,51 @@
+{{- if .Values.cloudflare.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "color-turf.fullname" . }}-cloudflared
+data:
+  config.yaml: |
+    tunnel: {{ .Values.cloudflare.tunnelId }}
+    credentials-file: /etc/cloudflared/credentials.json
+    metrics: 0.0.0.0:2000
+    no-autoupdate: true
+    ingress:
+      - hostname: {{ .Values.cloudflare.hostname }}
+        service: http://{{ include "color-turf.fullname" . }}-web:{{ .Values.service.webPort }}
+      - service: http_status:404
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "color-turf.fullname" . }}-cloudflared
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tunnel
+spec:
+  replicas: {{ .Values.cloudflare.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: tunnel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "color-turf.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: tunnel
+    spec:
+      containers:
+        - name: cloudflared
+          image: {{ .Values.cloudflare.image | quote }}
+          args: ["tunnel", "--config", "/etc/cloudflared/config.yaml", "run"]
+          volumeMounts:
+            - { name: config, mountPath: /etc/cloudflared/config.yaml, subPath: config.yaml, readOnly: true }
+            - { name: credentials, mountPath: /etc/cloudflared/credentials.json, subPath: credentials.json, readOnly: true }
+          resources:
+            {{- toYaml .Values.cloudflare.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: { name: {{ include "color-turf.fullname" . }}-cloudflared }
+        - name: credentials
+          secret: { secretName: {{ .Values.cloudflare.credentialsSecret }} }
+{{- end }}

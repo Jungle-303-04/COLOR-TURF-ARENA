@@ -5,6 +5,7 @@ server:
   image:
     repository: 183548421506.dkr.ecr.ap-northeast-2.amazonaws.com/color-turf-game-server
     tag: demo-20260715-1
+    digest: ""
     pullPolicy: IfNotPresent
   replicas: 2
   version: v1.1.3
@@ -16,6 +17,7 @@ server:
   snapshotIntervalMs: 1000
   redisUrl: redis://redis:6379
   publicBaseUrl: ""
+  singleUseGame: false
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: 2000m, memory: 512Mi }
@@ -31,6 +33,7 @@ web:
   image:
     repository: 183548421506.dkr.ecr.ap-northeast-2.amazonaws.com/color-turf-web
     tag: demo-20260715-1
+    digest: ""
     pullPolicy: IfNotPresent
   # One reverse proxy keeps every connection for a room on the same
   # lease-owning game server. Game-server availability remains independent.
@@ -56,11 +59,27 @@ bot:
 
 auth:
   create: false
+  demoAdminAuthDisabled: false
   existingSecret: color-turf-auth
   adminToken: ""
   opsEventToken: ""
   opsPlatformWebhookUrl: ""
   opsPlatformWebhookToken: ""
+
+chaos:
+  # This is fail-closed because it intentionally makes one game-server
+  # container exceed its cgroup memory limit. Enable only for the demo target.
+  allowPodOom: false
+  oomLeakChunkMiB: 4
+  oomLeakIntervalMs: 250
+
+opsiaRecovery:
+  # Grants the registered Opsia target agent only the Deployment permissions
+  # required for an operator-approved rollout restart in this namespace.
+  enabled: false
+  agentServiceAccount:
+    name: cluster-agent
+    namespace: target
 
 service:
   type: LoadBalancer
@@ -97,3 +116,14 @@ priorityClass:
 
 imagePrePull:
   enabled: true
+
+cloudflare:
+  enabled: false
+  tunnelId: ""
+  hostname: ""
+  credentialsSecret: color-turf-cloudflare-credentials
+  replicas: 2
+  image: cloudflare/cloudflared:2026.6.1
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 96Mi }

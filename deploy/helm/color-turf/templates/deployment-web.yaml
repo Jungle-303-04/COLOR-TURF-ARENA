@@ -24,7 +24,7 @@ spec:
       priorityClassName: {{ .Values.priorityClass.name }}
       containers:
         - name: web
-          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          image: {{ include "color-turf.webImage" . | quote }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           ports:
             - { name: http, containerPort: 8080 }

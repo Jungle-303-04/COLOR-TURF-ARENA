@@ -22,14 +22,14 @@ spec:
       terminationGracePeriodSeconds: 1
       containers:
         - name: server-image
-          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          image: {{ include "color-turf.serverImage" . | quote }}
           imagePullPolicy: {{ .Values.server.image.pullPolicy }}
           command: ["sh", "-c", "sleep 2147483647"]
           resources:
             requests: { cpu: 1m, memory: 2Mi }
             limits: { cpu: 10m, memory: 16Mi }
         - name: web-image
-          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          image: {{ include "color-turf.webImage" . | quote }}
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
           command: ["sh", "-c", "sleep 2147483647"]
           resources:
