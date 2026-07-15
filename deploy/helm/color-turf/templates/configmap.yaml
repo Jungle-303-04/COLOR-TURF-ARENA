@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "color-turf.fullname" . }}-config
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+data:
+  PUBLIC_BASE_URL: {{ .Values.server.publicBaseUrl | quote }}
+  BOT_GATEWAY_URL: {{ .Values.server.botGatewayUrl | default "http://server-stable:3001" | quote }}
+  REDIS_URL: {{ .Values.server.redisUrl | quote }}
+  SNAPSHOT_INTERVAL_MS: {{ .Values.server.snapshotIntervalMs | quote }}
+  GIT_SHA: {{ .Values.server.gitSha | quote }}
+  CLUSTER_NAME: {{ .Values.server.clusterName | quote }}
+  APP_VERSION: {{ .Values.server.version | quote }}
+  IMAGE_TAG: {{ include "color-turf.serverImage" . | quote }}
+  DEMO_ADMIN_AUTH_DISABLED: {{ .Values.auth.demoAdminAuthDisabled | default false | quote }}
+  SINGLE_USE_GAME: {{ .Values.server.singleUseGame | default false | quote }}
+  KUBERNETES_NAMESPACE: {{ .Release.Namespace | quote }}
+  KUBERNETES_LABEL_SELECTOR: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=game-server,color-turf/release-channel=stable" .Release.Name | quote }}
+  KUBERNETES_DEPLOYMENT_NAME: {{ printf "%s-server-stable" (include "color-turf.fullname" .) | quote }}
+  ALLOW_DEMO_OOM_KILL: {{ .Values.chaos.allowPodOom | default false | quote }}
+  OOM_LEAK_CHUNK_MIB: {{ .Values.chaos.oomLeakChunkMiB | default 4 | quote }}
+  OOM_LEAK_INTERVAL_MS: {{ .Values.chaos.oomLeakIntervalMs | default 250 | quote }}

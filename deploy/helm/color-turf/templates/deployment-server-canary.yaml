@@ -1,0 +1,61 @@
+{{- if .Values.canary.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "color-turf.fullname" . }}-server-canary
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: game-server
+    app.kubernetes.io/version: {{ .Values.canary.version | quote }}
+    color-turf/release-channel: canary
+    color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
+spec:
+  replicas: {{ .Values.canary.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: game-server
+      color-turf/release-channel: canary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "color-turf.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: game-server
+        app.kubernetes.io/version: {{ .Values.canary.version | quote }}
+        color-turf/release-channel: canary
+        color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
+    spec:
+      priorityClassName: {{ .Values.priorityClass.name }}
+      serviceAccountName: {{ include "color-turf.fullname" . }}
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: server
+          image: {{ include "color-turf.serverImage" . | quote }}
+          imagePullPolicy: {{ .Values.server.image.pullPolicy }}
+          ports:
+            - { name: http, containerPort: 3001 }
+          envFrom:
+            - configMapRef: { name: {{ include "color-turf.fullname" . }}-config }
+            - secretRef: { name: {{ include "color-turf.authSecretName" . }} }
+          env:
+            - { name: SERVER_VERSION, value: {{ .Values.canary.version | quote }} }
+            - { name: RELEASE_CHANNEL, value: canary }
+            - { name: BROADCAST_MODE, value: {{ .Values.canary.broadcastMode | quote }} }
+            - { name: DEMO_TICK_DELAY_MS, value: {{ .Values.canary.tickDelayMs | quote }} }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 1
+          lifecycle:
+            preStop:
+              exec: { command: ["sh", "-c", "sleep 5"] }
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+{{- end }}

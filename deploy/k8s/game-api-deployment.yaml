@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paint-arena-game-api
+  labels:
+    app.kubernetes.io/name: paint-arena-game-api
+    app.kubernetes.io/component: game-server
+    app.kubernetes.io/version: v1.1.3
+    color-turf/release-channel: stable
+    color-turf/cluster-role: primary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: paint-arena-game-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: paint-arena-game-api
+        app.kubernetes.io/component: game-server
+        app.kubernetes.io/version: v1.1.3
+        color-turf/release-channel: stable
+        color-turf/cluster-role: primary
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: paint-arena-observer
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: game-api
+          image: paint-arena-game-api:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          envFrom:
+            - configMapRef:
+                name: paint-arena-config
+          env:
+            - name: PORT
+              value: "3001"
+            - name: HOST
+              value: 0.0.0.0
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 750m
+              memory: 384Mi
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

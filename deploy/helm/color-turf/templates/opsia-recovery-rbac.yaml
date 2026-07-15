@@ -1,0 +1,27 @@
+{{- if .Values.opsiaRecovery.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "color-turf.fullname" . }}-opsia-recovery
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "color-turf.fullname" . }}-opsia-recovery
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "color-turf.fullname" . }}-opsia-recovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.opsiaRecovery.agentServiceAccount.name | quote }}
+    namespace: {{ .Values.opsiaRecovery.agentServiceAccount.namespace | quote }}
+{{- end }}

@@ -1,0 +1,8 @@
+.git
+node_modules
+**/dist
+**/*.tsbuildinfo
+coverage
+docs/evidence/screenshots
+*.log
+.env

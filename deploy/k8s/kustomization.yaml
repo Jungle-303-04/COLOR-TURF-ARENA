@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: paint-arena
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - service-account.yaml
+  - rbac.yaml
+  - game-api-deployment.yaml
+  - game-api-service.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
