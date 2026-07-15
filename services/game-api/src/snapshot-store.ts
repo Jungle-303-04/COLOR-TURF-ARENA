@@ -9,6 +9,9 @@ export interface SnapshotStorage {
   save(state: PersistedRoomState): Promise<void>;
   load(roomCode: string): Promise<PersistedRoomState | null>;
   loadAll(): Promise<PersistedRoomState[]>;
+  activeRoomCode(): Promise<string | null>;
+  activateSingleRoom(roomCode: string): Promise<void>;
+  clearAll(): Promise<void>;
   acquireLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean>;
   renewLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean>;
   releaseLease(roomCode: string, owner: string): Promise<void>;
@@ -40,6 +43,21 @@ export class MemorySnapshotStorage implements SnapshotStorage {
     return [...this.snapshots.values()].map((raw) => JSON.parse(raw) as PersistedRoomState);
   }
 
+  async activeRoomCode(): Promise<string | null> {
+    return this.snapshots.keys().next().value ?? null;
+  }
+
+  async activateSingleRoom(roomCode: string): Promise<void> {
+    const keep = roomCode.toUpperCase();
+    for (const code of [...this.snapshots.keys()]) if (code !== keep) this.snapshots.delete(code);
+    for (const code of [...this.leases.keys()]) if (code !== keep) this.leases.delete(code);
+  }
+
+  async clearAll(): Promise<void> {
+    this.snapshots.clear();
+    this.leases.clear();
+  }
+
   async acquireLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean> {
     const key = roomCode.toUpperCase();
     const lease = this.leases.get(key);
@@ -66,6 +84,7 @@ export class RedisSnapshotStorage implements SnapshotStorage {
   readonly kind = "redis" as const;
   private readonly client: RedisClientType;
   private ready = false;
+  private readonly activeRoomKey = "color-turf:active-room";
 
   constructor(url: string) {
     this.client = createClient({ url });
@@ -89,6 +108,8 @@ export class RedisSnapshotStorage implements SnapshotStorage {
   isReady(): boolean { return this.ready && this.client.isReady; }
 
   async save(state: PersistedRoomState): Promise<void> {
+    const activeRoom = await this.activeRoomCode();
+    if (activeRoom && activeRoom !== state.roomCode.toUpperCase()) return;
     await this.client.set(snapshotKey(state.roomCode), JSON.stringify(state));
     for (const player of state.players) {
       await this.client.set(`color-turf:session:${player.id}`, JSON.stringify({
@@ -106,10 +127,30 @@ export class RedisSnapshotStorage implements SnapshotStorage {
   }
 
   async loadAll(): Promise<PersistedRoomState[]> {
-    const keys = await this.client.keys("color-turf:room:*:snapshot");
+    const activeRoom = await this.activeRoomCode();
+    const keys = activeRoom
+      ? [snapshotKey(activeRoom)]
+      : await this.client.keys("color-turf:room:*:snapshot");
     if (keys.length === 0) return [];
     const values = await this.client.mGet(keys);
     return values.filter((value): value is string => Boolean(value)).map((value) => JSON.parse(value) as PersistedRoomState);
+  }
+
+  async activeRoomCode(): Promise<string | null> {
+    return this.client.get(this.activeRoomKey);
+  }
+
+  async activateSingleRoom(roomCode: string): Promise<void> {
+    const keep = roomCode.toUpperCase();
+    await this.client.set(this.activeRoomKey, keep);
+    const keys = await this.client.keys("color-turf:*");
+    const stale = keys.filter((key) => key !== this.activeRoomKey && key !== snapshotKey(keep));
+    if (stale.length > 0) await this.client.del(stale);
+  }
+
+  async clearAll(): Promise<void> {
+    const keys = await this.client.keys("color-turf:*");
+    if (keys.length > 0) await this.client.del(keys);
   }
 
   async acquireLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean> {

@@ -1,6 +1,6 @@
 import type { JoinResult, RoomSnapshot, StateDelta, WatchResult } from "@paint-arena/shared";
 import { io as createClient, type Socket } from "socket.io-client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGameServer } from "./server.js";
 
 const emitAck = <T>(socket: Socket, event: string, payload: unknown): Promise<T> => new Promise((resolve) => socket.emit(event, payload, (result: T) => resolve(result)));
@@ -25,6 +25,7 @@ describe("two-client Socket.IO and protected operations flow", () => {
     clients.length = 0;
     if (stop) await stop();
     stop = null;
+    vi.unstubAllEnvs();
   });
 
   it("keeps the replacement socket authoritative after an overlapping session resume", async () => {
@@ -133,6 +134,21 @@ describe("two-client Socket.IO and protected operations flow", () => {
     });
     expect(opsEvent.status).toBe(202);
 
+    const blockedOom = await fetch(`${running.url}/api/admin/faults/memory-oom`, {
+      method: "POST",
+      headers: auth,
+      body: "{}",
+    });
+    expect(blockedOom.status).toBe(409);
+    expect(await blockedOom.json()).toEqual({
+      error: "이 환경에서는 실제 OOMKilled 장애 주입이 비활성화되어 있습니다.",
+    });
+
+    for (const removedPath of ["lag", "full-broadcast", "server-shutdown", "primary-failure", "failover", "reset"]) {
+      expect((await fetch(`${running.url}/api/admin/chaos/${removedPath}`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
+    }
+    expect((await fetch(`${running.url}/api/demo-simulation`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
+
     await new Promise((resolve) => setTimeout(resolve, 350));
     const persisted = await gameServer.storage.load(created.room.roomCode);
     expect(persisted?.players).toHaveLength(2);
@@ -143,4 +159,32 @@ describe("two-client Socket.IO and protected operations flow", () => {
     expect(metrics).toContain("game_snapshot_save_duration_seconds");
     expect(metrics).toContain("game_ops_events_total");
   }, 20_000);
+
+  it("exposes one real memory fault path and reports allocation progress", async () => {
+    vi.stubEnv("ALLOW_DEMO_OOM_KILL", "true");
+    const scheduled: Array<() => void> = [];
+    const gameServer = createGameServer({
+      adminToken: "test-admin",
+      memoryOomChunkBytes: 1024 * 1024,
+      memoryOomAllocate: () => Buffer.alloc(1024),
+      memoryOomSchedule: (callback) => {
+        scheduled.push(callback);
+        return setTimeout(() => undefined, 60_000);
+      },
+    });
+    const running = await gameServer.start(0, "127.0.0.1");
+    stop = gameServer.stop;
+
+    const started = await fetch(`${running.url}/api/admin/faults/memory-oom`, { method: "POST", headers: auth, body: "{}" });
+    expect(started.status).toBe(202);
+    expect(((await started.json()) as { faultInjection: { phase: string } }).faultInjection.phase).toBe("allocating");
+    expect(scheduled).toHaveLength(1);
+
+    scheduled.shift()?.();
+    const observed = await (await fetch(`${running.url}/api/ops`)).json() as { faultInjection: { phase: string; allocatedMiB: number; targetPod: string | null } };
+    expect(observed.faultInjection.phase).toBe("allocating");
+    expect(observed.faultInjection.allocatedMiB).toBeGreaterThan(0);
+    expect(observed.faultInjection.targetPod).toBe("local-process");
+    expect((await fetch(`${running.url}/api/admin/faults/memory-oom`, { method: "POST", headers: auth, body: "{}" })).status).toBe(409);
+  });
 });

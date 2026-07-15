@@ -12,7 +12,17 @@ interface KubernetesPod {
   status?: {
     phase?: string;
     conditions?: Array<{ type?: string; status?: string }>;
-    containerStatuses?: Array<{ restartCount?: number; image?: string }>;
+    containerStatuses?: Array<{
+      restartCount?: number;
+      image?: string;
+      state?: {
+        waiting?: { reason?: string };
+        terminated?: { reason?: string };
+      };
+      lastState?: {
+        terminated?: { reason?: string; finishedAt?: string };
+      };
+    }>;
   };
 }
 
@@ -80,11 +90,21 @@ export class KubernetesObserver {
         const name = pod.metadata?.name ?? "unknown";
         const metric = metricsByPod.get(name)?.containers?.[0]?.usage;
         const statuses = pod.status?.containerStatuses ?? [];
+        const currentStateReason = statuses
+          .map((status) => status.state?.waiting?.reason ?? status.state?.terminated?.reason)
+          .find(Boolean) ?? null;
+        const latestTermination = statuses
+          .map((status) => status.lastState?.terminated)
+          .filter((termination): termination is NonNullable<typeof termination> => Boolean(termination))
+          .sort((left, right) => (right.finishedAt ?? "").localeCompare(left.finishedAt ?? ""))[0];
         return {
           name,
           phase: pod.status?.phase ?? "Unknown",
           ready: pod.status?.conditions?.some((condition) => condition.type === "Ready" && condition.status === "True") ?? false,
           restarts: statuses.reduce((sum, status) => sum + (status.restartCount ?? 0), 0),
+          currentStateReason,
+          lastTerminationReason: latestTermination?.reason ?? null,
+          lastTerminatedAt: latestTermination?.finishedAt ?? null,
           cpu: metric?.cpu ?? null,
           memory: metric?.memory ?? null,
           image: statuses[0]?.image ?? pod.spec?.containers?.[0]?.image ?? null,
@@ -158,4 +178,3 @@ export class KubernetesObserver {
     });
   }
 }
-

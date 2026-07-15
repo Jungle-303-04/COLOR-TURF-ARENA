@@ -16,12 +16,12 @@ import {
   type InputPayload,
   type InputResult,
   type JoinResult,
+  type MemoryOomFaultStatus,
   type OpsEventPayload,
   type OpsSnapshot,
   type PublicConfig,
   type RoomSnapshot,
   type ServerIdentity,
-  type SimulationState,
   type SystemStatus,
   type VersionInfo,
   type WatchResult,
@@ -54,6 +54,10 @@ export interface GameServerOptions {
   snapshotStorage?: SnapshotStorage;
   snapshotIntervalMs?: number;
   demoTickDelayMs?: number;
+  memoryOomAllocate?: (bytes: number) => Buffer;
+  memoryOomSchedule?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+  memoryOomChunkBytes?: number;
+  memoryOomIntervalMs?: number;
 }
 
 export interface RunningGameServer {
@@ -165,6 +169,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const leaseTtlMs = 7000;
   const snapshotIntervalMs = Math.max(250, options.snapshotIntervalMs ?? numeric(process.env.SNAPSHOT_INTERVAL_MS, 1000));
   const adminToken = options.adminToken ?? process.env.ADMIN_TOKEN ?? "demo-admin";
+  const demoAdminAuthDisabled = process.env.DEMO_ADMIN_AUTH_DISABLED === "true";
+  const singleUseMode = process.env.SINGLE_USE_GAME === "true";
   const opsEventToken = options.opsEventToken ?? process.env.OPS_EVENT_TOKEN ?? "demo-ops";
   const stableVersion = options.appVersion ?? process.env.SERVER_VERSION ?? process.env.APP_VERSION ?? "v1.1.3";
   const canaryVersion = process.env.CANARY_SERVER_VERSION ?? "v1.2.0";
@@ -191,36 +197,54 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   };
   let lastCpuUsage = process.cpuUsage();
   let lastCpuSampleAt = Date.now();
-  const simulation: SimulationState = {
-    label: "DEMO / CHAOS MODE",
+  const runtimeMode = {
     latencyMs: configuredTickDelayMs,
-    disconnectWaves: 0,
-    podRestartMarkerUntil: null,
     forceFullBroadcast: configuredBroadcastMode === "full",
-    activeCluster: options.clusterName ?? (process.env.CLUSTER_NAME === "dr" ? "dr" : "primary"),
-    updatedAt: new Date().toISOString(),
+    activeCluster: options.clusterName ?? (
+      process.env.CLUSTER_NAME === "dr" || process.env.CLUSTER_NAME === "cluster-1" || process.env.CLUSTER_NAME === "cluster-2"
+        ? process.env.CLUSTER_NAME
+        : "primary"
+    ),
   };
 
   let tickTimer: NodeJS.Timeout | null = null;
   let opsTimer: NodeJS.Timeout | null = null;
   let snapshotTimer: NodeJS.Timeout | null = null;
   let leaseTimer: NodeJS.Timeout | null = null;
+  let memoryOomTimer: NodeJS.Timeout | null = null;
+  const retainedFaultMemory: Buffer[] = [];
+  const memoryOomChunkBytes = Math.max(1024 * 1024, options.memoryOomChunkBytes ?? numeric(process.env.OOM_LEAK_CHUNK_MIB, 4) * 1024 * 1024);
+  const memoryOomIntervalMs = Math.max(100, options.memoryOomIntervalMs ?? numeric(process.env.OOM_LEAK_INTERVAL_MS, 250));
+  const memoryOomAllocate = options.memoryOomAllocate ?? ((bytes: number) => Buffer.alloc(bytes, 0xa5));
+  const memoryOomSchedule = options.memoryOomSchedule ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  let memoryOomFault: MemoryOomFaultStatus = {
+    kind: "memory-oom",
+    phase: "idle",
+    targetPod: null,
+    requestedAt: null,
+    observedAt: new Date().toISOString(),
+    allocatedMiB: 0,
+    restartCount: null,
+    lastTerminationReason: null,
+    lastTerminatedAt: null,
+    message: "실제 메모리 장애를 주입하지 않았습니다.",
+  };
   const announcementTimers = new Map<string, NodeJS.Timeout>();
 
   const baseIdentity = (): ServerIdentity => ({
     version: stableVersion,
     gitSha: options.gitSha ?? process.env.GIT_SHA ?? "local",
     podName: options.podName ?? process.env.POD_NAME ?? "local-process",
-    cluster: simulation.activeCluster,
+    cluster: runtimeMode.activeCluster,
     releaseChannel: options.releaseChannel ?? (process.env.RELEASE_CHANNEL === "canary" ? "canary" : "stable"),
-    broadcastMode: simulation.forceFullBroadcast ? "full" : configuredBroadcastMode,
+    broadcastMode: runtimeMode.forceFullBroadcast ? "full" : configuredBroadcastMode,
   });
 
   const roomIdentity = (room: GameRoom): ServerIdentity => ({
     ...baseIdentity(),
     version: room.releaseChannel === "canary" ? canaryVersion : stableVersion,
     releaseChannel: room.releaseChannel,
-    broadcastMode: simulation.forceFullBroadcast || room.releaseChannel === "canary" ? "full" : configuredBroadcastMode,
+    broadcastMode: runtimeMode.forceFullBroadcast || room.releaseChannel === "canary" ? "full" : configuredBroadcastMode,
   });
 
   const addEvent = (
@@ -333,11 +357,27 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     lastCpuUsage = cpuUsage;
     lastCpuSampleAt = now;
     stats.inputTimes = stats.inputTimes.filter((time) => time > now - 1000);
-    if (simulation.podRestartMarkerUntil && new Date(simulation.podRestartMarkerUntil).getTime() <= now) {
-      simulation.podRestartMarkerUntil = null;
-      simulation.updatedAt = new Date().toISOString();
-    }
     const summaries = await clusterRoomSummaries();
+    const infrastructure = await kubernetes.observe();
+    const observedOomPod = infrastructure.pods
+      .filter((pod) => pod.lastTerminationReason === "OOMKilled"
+        && pod.lastTerminatedAt
+        && new Date(pod.lastTerminatedAt).getTime() >= now - 15 * 60_000)
+      .sort((left, right) => (right.lastTerminatedAt ?? "").localeCompare(left.lastTerminatedAt ?? ""))[0];
+    if (observedOomPod) {
+      memoryOomFault = {
+        ...memoryOomFault,
+        phase: observedOomPod.ready ? "recovered" : "restarting",
+        targetPod: observedOomPod.name,
+        observedAt: infrastructure.observedAt,
+        restartCount: observedOomPod.restarts,
+        lastTerminationReason: observedOomPod.lastTerminationReason,
+        lastTerminatedAt: observedOomPod.lastTerminatedAt,
+        message: observedOomPod.ready
+          ? "Kubernetes가 OOMKilled를 기록했고 컨테이너가 다시 Ready 상태가 되었습니다."
+          : "Kubernetes가 OOMKilled를 기록했고 컨테이너를 다시 시작하고 있습니다.",
+      };
+    }
     metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries);
     return {
       observedAt: new Date(now).toISOString(),
@@ -356,8 +396,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         metrics: runtimeMetricSummary(),
       },
       rooms: summaries,
-      infrastructure: await kubernetes.observe(),
-      simulation: { ...simulation },
+      infrastructure,
+      faultInjection: { ...memoryOomFault },
       recentEvents: events.slice(0, 60),
     };
   };
@@ -390,11 +430,21 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }
     next();
   };
-  const requireAdmin = requireToken(adminToken);
+  const requireAdmin = demoAdminAuthDisabled
+    ? (_request: Request, _response: Response, next: NextFunction) => next()
+    : requireToken(adminToken);
   const requireOpsEvent = requireToken(opsEventToken);
 
   const persistRooms = async () => {
+    const activeRoom = singleUseMode ? await storage.activeRoomCode() : null;
     for (const room of roomStore.list()) {
+      if (activeRoom && room.roomCode !== activeRoom) {
+        botManager.stopRoom(room.roomCode, false);
+        roomStore.remove(room.roomCode);
+        await storage.releaseLease(room.roomCode, ownerId);
+        addEvent("room.expired", `Removed stale room ${room.roomCode} in single-use mode`, "system", room.roomCode);
+        continue;
+      }
       setIdentity(room);
       const started = performance.now();
       await storage.save(room.serialize());
@@ -472,11 +522,11 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     if (tickRunning) return;
     tickRunning = true;
     try {
-      if (simulation.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, simulation.latencyMs));
+      if (runtimeMode.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, runtimeMode.latencyMs));
       for (const room of roomStore.list()) {
         const started = performance.now();
         const changed = room.tick();
-        const elapsed = performance.now() - started + simulation.latencyMs;
+        const elapsed = performance.now() - started + runtimeMode.latencyMs;
         pushWindow(stats.tickDurationsMs, elapsed);
         setIdentity(room);
         const snapshot = room.snapshot();
@@ -486,37 +536,6 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     } finally {
       tickRunning = false;
     }
-  };
-
-  const performFailover = async () => {
-    const recoveryStarted = performance.now();
-    const sourceCluster = simulation.activeCluster;
-    addEvent("PRIMARY_UNHEALTHY", "Primary health check failed", "chaos");
-    addEvent("FAILOVER_STARTED", "DR failover started; clients will reconnect automatically", "chaos");
-    await persistRooms();
-    simulation.activeCluster = "dr";
-    simulation.updatedAt = new Date().toISOString();
-    for (const socket of await io.fetchSockets()) {
-      if ((socket.data as SocketData).role === "controller") socket.disconnect(true);
-    }
-    for (const current of [...roomStore.list()]) {
-      const persisted = await storage.load(current.roomCode);
-      if (!persisted) continue;
-      const restored = roomStore.replace(persisted);
-      setIdentity(restored);
-      const elapsed = (performance.now() - recoveryStarted) / 1000;
-      metrics.gameRoomRecoveryDuration.observe({
-        room_id: restored.roomCode,
-        source_cluster: sourceCluster,
-        target_cluster: "dr",
-      }, elapsed);
-      addEvent("SNAPSHOT_RESTORED", `Room restored from ${storage.kind} snapshot`, "chaos", restored.roomCode, {
-        recoveryTimeMs: Math.round(elapsed * 1000),
-        snapshotAgeMs: stats.lastSnapshotAt ? Date.now() - stats.lastSnapshotAt : null,
-      });
-      broadcastSnapshot(restored);
-    }
-    addEvent("FAILOVER_COMPLETED", "DR recovery completed; reconnecting sessions retain team and position", "chaos");
   };
 
   const botManager = new BotManager(
@@ -672,14 +691,40 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       appVersion: baseIdentity().version,
       socketPath,
       tickRateHz: DEFAULT_TICK_RATE_HZ,
-      adminTokenRequired: true,
+      adminTokenRequired: !demoAdminAuthDisabled,
     };
     response.json(config);
   });
 
   app.get("/api/rooms", async (_request, response) => response.json({ rooms: await clusterRoomSummaries() }));
   app.post("/api/rooms", requireAdmin, async (request, response) => {
+    if (singleUseMode) {
+      const activeRoomCode = await storage.activeRoomCode();
+      if (activeRoomCode) {
+        const existing = await loadRoom(activeRoomCode);
+        if (existing.snapshot) {
+          response.status(200).json({
+            room: existing.snapshot,
+            joinUrl: `${resolvePublicBaseUrl(request)}/play/${existing.snapshot.roomCode}`,
+            screenUrl: `${resolvePublicBaseUrl(request)}/watch/${existing.snapshot.roomCode}`,
+            socketPath,
+            reused: true,
+          });
+          return;
+        }
+      }
+    }
     const room = roomStore.create(createConfig(request.body as Record<string, unknown>));
+    if (singleUseMode) {
+      await storage.activateSingleRoom(room.roomCode);
+      for (const stale of [...roomStore.list()]) {
+        if (stale.roomCode === room.roomCode) continue;
+        botManager.stopRoom(stale.roomCode, false);
+        roomStore.remove(stale.roomCode);
+        await storage.releaseLease(stale.roomCode, ownerId);
+      }
+      addEvent("single_use.reset", `Activated ${room.roomCode} and removed every previous game`, "admin", room.roomCode);
+    }
     await storage.acquireLease(room.roomCode, ownerId, leaseTtlMs);
     setIdentity(room);
     await storage.save(room.serialize());
@@ -806,46 +851,59 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.status(202).json({ accepted: true, event: entry });
   });
 
-  const chaosHandler = async (action: string, request: Request, response: Response) => {
-    if (action === "lag") {
-      simulation.latencyMs = Math.max(0, Math.min(1000, Math.round(numeric((request.body as Record<string, unknown>).delayMs, simulation.latencyMs > 0 ? 0 : 350))));
-      addEvent("chaos.tick-lag", `Tick delay set to ${simulation.latencyMs}ms`, "chaos");
-    } else if (action === "full-broadcast") {
-      simulation.forceFullBroadcast = (request.body as Record<string, unknown>).enabled === false ? false : !simulation.forceFullBroadcast;
-      addEvent("chaos.full-broadcast", `Full state broadcast ${simulation.forceFullBroadcast ? "enabled" : "disabled"}`, "chaos");
-    } else if (action === "primary-failure" || action === "failover") {
-      await performFailover();
-    } else if (action === "reset") {
-      simulation.latencyMs = configuredTickDelayMs;
-      simulation.forceFullBroadcast = configuredBroadcastMode === "full";
-      simulation.activeCluster = options.clusterName ?? "primary";
-      addEvent("SERVICE_RECOVERED", "Demo / Chaos effects cleared", "chaos");
-      for (const room of roomStore.list()) broadcastSnapshot(room);
-    } else if (action === "server-shutdown") {
-      if (process.env.ALLOW_DEMO_SERVER_SHUTDOWN !== "true") {
-        response.status(409).json({ error: "Set ALLOW_DEMO_SERVER_SHUTDOWN=true to enable an actual process shutdown." });
-        return;
-      }
-      addEvent("server.shutdown.requested", "Game server shutdown requested", "chaos");
-      response.status(202).json({ accepted: true });
-      setTimeout(() => void stop(), 250);
-      return;
-    } else {
-      response.status(400).json({ error: "Unknown chaos action" });
-      return;
+  const allocateMemoryUntilKilled = () => {
+    if (memoryOomFault.phase !== "allocating") return;
+    try {
+      // Buffer.alloc touches every page. The cgroup, not an application flag,
+      // terminates this process once the real container memory limit is hit.
+      retainedFaultMemory.push(memoryOomAllocate(memoryOomChunkBytes));
+      memoryOomFault = {
+        ...memoryOomFault,
+        allocatedMiB: retainedFaultMemory.reduce((sum, value) => sum + value.byteLength, 0) / 1024 / 1024,
+        observedAt: new Date().toISOString(),
+        message: "실제 메모리를 계속 점유하고 있습니다. Kubernetes OOMKilled 판정을 기다리는 중입니다.",
+      };
+      memoryOomTimer = memoryOomSchedule(allocateMemoryUntilKilled, memoryOomIntervalMs);
+    } catch (error) {
+      memoryOomFault = {
+        ...memoryOomFault,
+        phase: "failed",
+        observedAt: new Date().toISOString(),
+        message: error instanceof Error ? error.message : "메모리 장애 주입 중 오류가 발생했습니다.",
+      };
+      addEvent("fault.memory-oom.failed", memoryOomFault.message, "fault", null, { podName: baseIdentity().podName });
     }
-    simulation.updatedAt = new Date().toISOString();
-    response.json(await getOpsSnapshot());
   };
 
-  for (const action of ["lag", "full-broadcast", "server-shutdown", "primary-failure", "failover", "reset"] as const) {
-    app.post(`/api/admin/chaos/${action}`, requireAdmin, (request, response) => void chaosHandler(action, request, response));
-  }
-  app.post("/api/demo-simulation", requireAdmin, (request, response) => {
-    const legacy = String((request.body as Record<string, unknown>).action ?? "");
-    const mapped = legacy === "latency.toggle" ? "lag" : legacy === "disconnect.wave" ? "primary-failure" : legacy === "clear" ? "reset" : "";
-    if (!mapped) { response.status(400).json({ error: "Unknown simulation action" }); return; }
-    void chaosHandler(mapped, request, response);
+  app.post("/api/admin/faults/memory-oom", requireAdmin, async (_request, response) => {
+    if (process.env.ALLOW_DEMO_OOM_KILL !== "true") {
+      response.status(409).json({ error: "이 환경에서는 실제 OOMKilled 장애 주입이 비활성화되어 있습니다." });
+      return;
+    }
+    if (memoryOomFault.phase === "allocating") {
+      response.status(409).json({ error: "이 Pod에서 실제 메모리 장애 주입이 이미 진행 중입니다." });
+      return;
+    }
+    const requestedAt = new Date().toISOString();
+    memoryOomFault = {
+      kind: "memory-oom",
+      phase: "allocating",
+      targetPod: baseIdentity().podName,
+      requestedAt,
+      observedAt: requestedAt,
+      allocatedMiB: 0,
+      restartCount: null,
+      lastTerminationReason: null,
+      lastTerminatedAt: null,
+      message: "실제 메모리 누수를 시작했습니다. 할당량과 Pod 상태를 관측하고 있습니다.",
+    };
+    addEvent("fault.memory-oom.started", "Actual memory leak started; waiting for Kubernetes OOMKilled and restart", "fault", null, {
+      podName: baseIdentity().podName,
+      chunkMiB: memoryOomChunkBytes / 1024 / 1024,
+      intervalMs: memoryOomIntervalMs,
+    });
+    response.status(202).json(await getOpsSnapshot());
+    memoryOomTimer = memoryOomSchedule(allocateMemoryUntilKilled, memoryOomIntervalMs);
   });
 
   const joinRoomChannel = async (socket: Socket, roomCode: string): Promise<WatchResult> => {
@@ -898,7 +956,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       acknowledge?.(await getOpsSnapshot());
     });
     socket.on("admin_subscribe", (payload: { token?: string }, acknowledge?: (result: { ok: boolean }) => void) => {
-      const ok = payload.token === adminToken;
+      const ok = demoAdminAuthDisabled || payload.token === adminToken;
       if (ok) { (socket.data as SocketData).role = "admin"; void socket.join("ops"); }
       acknowledge?.({ ok });
     });
@@ -1019,6 +1077,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     if (opsTimer) clearInterval(opsTimer);
     if (snapshotTimer) clearInterval(snapshotTimer);
     if (leaseTimer) clearInterval(leaseTimer);
+    if (memoryOomTimer) clearTimeout(memoryOomTimer);
     for (const timer of announcementTimers.values()) clearTimeout(timer);
     announcementTimers.clear();
     eventLoopDelay.disable();
@@ -1026,6 +1085,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     opsTimer = null;
     snapshotTimer = null;
     leaseTimer = null;
+    memoryOomTimer = null;
     if (storage.isReady()) {
       await persistRooms();
       for (const room of roomStore.list()) await storage.releaseLease(room.roomCode, ownerId);

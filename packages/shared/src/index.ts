@@ -6,7 +6,7 @@ export const RELEASE_CHANNELS = ["stable", "canary"] as const;
 export type TeamId = (typeof TEAM_IDS)[number];
 export type RoomStatus = "lobby" | "running" | "paused" | "ended";
 export type ReleaseChannel = (typeof RELEASE_CHANNELS)[number];
-export type ClusterName = "primary" | "dr";
+export type ClusterName = "primary" | "dr" | "cluster-1" | "cluster-2";
 export type BroadcastMode = "delta" | "full";
 
 export interface Vector2 {
@@ -114,7 +114,7 @@ export interface EventLogEntry {
   type: string;
   message: string;
   roomCode: string | null;
-  source: "system" | "admin" | "player" | "simulation" | "platform" | "chaos";
+  source: "system" | "admin" | "player" | "simulation" | "platform" | "chaos" | "fault";
   metadata?: Record<string, string | number | boolean | null>;
 }
 
@@ -141,6 +141,9 @@ export interface PodObservation {
   phase: string;
   ready: boolean;
   restarts: number;
+  currentStateReason: string | null;
+  lastTerminationReason: string | null;
+  lastTerminatedAt: string | null;
   cpu: string | null;
   memory: string | null;
   image: string | null;
@@ -159,14 +162,17 @@ export interface InfrastructureObservation {
   imageTag: string;
 }
 
-export interface SimulationState {
-  label: "DEMO / CHAOS MODE";
-  latencyMs: number;
-  disconnectWaves: number;
-  podRestartMarkerUntil: string | null;
-  forceFullBroadcast: boolean;
-  activeCluster: ClusterName;
-  updatedAt: string;
+export interface MemoryOomFaultStatus {
+  kind: "memory-oom";
+  phase: "idle" | "allocating" | "restarting" | "recovered" | "failed";
+  targetPod: string | null;
+  requestedAt: string | null;
+  observedAt: string;
+  allocatedMiB: number;
+  restartCount: number | null;
+  lastTerminationReason: string | null;
+  lastTerminatedAt: string | null;
+  message: string;
 }
 
 export interface RuntimeMetricSummary {
@@ -203,7 +209,7 @@ export interface OpsSnapshot {
   };
   rooms: RoomSummary[];
   infrastructure: InfrastructureObservation;
-  simulation: SimulationState;
+  faultInjection: MemoryOomFaultStatus;
   recentEvents: EventLogEntry[];
 }
 
@@ -252,7 +258,7 @@ export const opsEventSchema = z.object({
   service: z.string().trim().max(80).optional(),
   version: z.string().trim().max(40).optional(),
   gitSha: z.string().trim().max(64).optional(),
-  cluster: z.enum(["primary", "dr"]).optional(),
+  cluster: z.enum(["primary", "dr", "cluster-1", "cluster-2"]).optional(),
   releaseChannel: z.enum(RELEASE_CHANNELS).optional(),
   message: z.string().trim().min(1).max(300),
 });

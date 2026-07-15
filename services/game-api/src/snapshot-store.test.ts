@@ -17,4 +17,16 @@ describe("snapshot storage and room lease", () => {
     expect(await storage.acquireLease("LEASE", "dr", 1000)).toBe(true);
     await storage.close();
   });
+
+  it("keeps only the newly activated room in single-use mode", async () => {
+    const storage = new MemorySnapshotStorage();
+    await storage.connect();
+    await storage.save(new GameRoom("FIRST").serialize());
+    await storage.save(new GameRoom("SECOND").serialize());
+    await storage.activateSingleRoom("SECOND");
+    expect(await storage.activeRoomCode()).toBe("SECOND");
+    expect((await storage.loadAll()).map((room) => room.roomCode)).toEqual(["SECOND"]);
+    await storage.clearAll();
+    expect(await storage.loadAll()).toEqual([]);
+  });
 });
