@@ -59,8 +59,8 @@ export const api = {
     body: JSON.stringify({ action, count }),
   }, true),
   ops: () => requestJson<OpsSnapshot>("/api/ops"),
-  chaos: (action: "lag" | "full-broadcast" | "server-shutdown" | "primary-failure" | "failover" | "reset", body: Record<string, unknown> = {}) => requestJson<OpsSnapshot>(`/api/admin/chaos/${action}`, {
+  triggerMemoryOom: () => requestJson<OpsSnapshot>("/api/admin/faults/memory-oom", {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({}),
   }, true),
 };

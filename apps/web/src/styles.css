@@ -167,6 +167,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .source-admin { background: var(--team-b); }
 .source-player { background: var(--team-a); }
 .source-simulation { background: var(--amber); }
+.source-fault { background: var(--red); }
 .event-list b { display: block; font-size: 0.62rem; letter-spacing: 0.03em; }
 .event-list p { margin: 0.14rem 0 0; color: var(--muted); font-size: 0.62rem; line-height: 1.35; }
 
@@ -339,7 +340,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .simulation-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
 .simulation-heading h2 { margin: 0.35rem 0 0.15rem; font-size: 1rem; }
 .simulation-heading p { margin: 0; color: var(--muted); font-size: 0.61rem; }
-.simulation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; margin: 0.8rem 0; }
+.simulation-grid { display: grid; grid-template-columns: 1fr; gap: 0.6rem; margin: 0.8rem 0; }
 .simulation-card { min-height: 6rem; padding: 0.7rem; display: grid; grid-template-columns: auto 1fr; gap: 0.55rem; align-items: center; border: 1px solid var(--line); border-radius: 0.55rem; text-align: left; background: rgba(0, 0, 0, 0.2); cursor: pointer; }
 .simulation-card:hover:not(:disabled), .simulation-card.is-active { border-color: rgba(255, 204, 77, 0.42); background: rgba(255, 204, 77, 0.06); }
 .simulation-card:disabled { opacity: 0.45; }
@@ -349,6 +350,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .simulation-card > strong { grid-column: 2; color: var(--amber); font-family: ui-monospace, monospace; font-size: 0.58rem; }
 .simulation-disclaimer { padding: 0.55rem 0.65rem; display: flex; gap: 0.65rem; border-radius: 0.45rem; background: rgba(255, 204, 77, 0.05); color: var(--muted); font-size: 0.53rem; }
 .simulation-disclaimer b { color: var(--amber); white-space: nowrap; }
+.fault-phase { padding: .35rem .55rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 800 .58rem/1 ui-monospace, monospace; text-transform: uppercase; }
+.fault-phase.phase-allocating, .fault-phase.phase-restarting { border-color: rgba(255, 204, 77, .48); color: var(--amber); }
+.fault-phase.phase-recovered { border-color: rgba(81, 226, 194, .42); color: var(--mint); }
+.fault-phase.phase-failed { border-color: rgba(255, 64, 90, .45); color: var(--red); }
+.fault-observation-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; margin: .75rem 0; }
+.fault-observation-grid > div { min-width: 0; padding: .65rem; border: 1px solid var(--line); border-radius: .5rem; background: rgba(0, 0, 0, .16); }
+.fault-observation-grid span, .fault-observation-grid b { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fault-observation-grid span { color: var(--muted); font-size: .52rem; }
+.fault-observation-grid b { margin-top: .25rem; font-size: .62rem; }
 .compact-events { max-height: 14rem; }
 
 @media (max-width: 1320px) {

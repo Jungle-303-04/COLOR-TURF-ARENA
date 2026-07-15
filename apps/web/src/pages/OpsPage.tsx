@@ -8,7 +8,6 @@ import { createSocket } from "../lib/socket";
 
 export const OpsPage = () => {
   const [snapshot, setSnapshot] = useState<OpsSnapshot | null>(null);
-  const [tickRateHz, setTickRateHz] = useState(20);
   const [socketLive, setSocketLive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -22,20 +21,19 @@ export const OpsPage = () => {
     socket.on("disconnect", () => setSocketLive(false));
     socket.on("ops.snapshot", (next: OpsSnapshot) => setSnapshot(next));
     socket.connect();
-    void api.config().then((config) => setTickRateHz(config.tickRateHz)).catch(() => undefined);
     void api.ops().then(setSnapshot).catch((loadError: unknown) => setError(loadError instanceof Error ? loadError.message : "관제 상태를 불러오지 못했습니다."));
     return () => {
       socket.disconnect();
     };
   }, []);
 
-  const runSimulation = async (action: "lag" | "full-broadcast" | "primary-failure" | "reset", body: Record<string, unknown> = {}) => {
+  const triggerMemoryOom = async () => {
     setBusy(true);
     setError("");
     try {
-      setSnapshot(await api.chaos(action, body));
+      setSnapshot(await api.triggerMemoryOom());
     } catch (simulationError) {
-      setError(simulationError instanceof Error ? simulationError.message : "시뮬레이션 명령에 실패했습니다.");
+      setError(simulationError instanceof Error ? simulationError.message : "실제 메모리 장애 주입에 실패했습니다.");
     } finally {
       setBusy(false);
     }
@@ -43,7 +41,7 @@ export const OpsPage = () => {
 
   const server = snapshot?.server;
   const infrastructure = snapshot?.infrastructure;
-  const simulation = snapshot?.simulation;
+  const fault = snapshot?.faultInjection;
   const activeRooms = snapshot?.rooms.filter((room) => room.status === "running").length ?? 0;
   const totalPlayers = snapshot?.rooms.reduce((sum, room) => sum + room.connectedPlayers, 0) ?? 0;
 
@@ -113,21 +111,16 @@ export const OpsPage = () => {
       <div className="ops-lower-grid">
         <section className="panel simulation-panel">
           <div className="simulation-heading">
-            <div><span className="simulation-tag">DEMO SIMULATION</span><h2>Failure injection lab</h2><p>아래 효과는 발표 시연용이며 실제 인프라 상태 카드와 분리됩니다.</p></div>
-            <button type="button" className="button button-ghost" disabled={busy} onClick={() => void runSimulation("reset")}>CLEAR ALL</button>
+            <div><span className="simulation-tag">실제 장애 주입</span><h2>메모리 누수 → OOMKilled</h2><p>애플리케이션 메모리를 실제로 점유하고 Kubernetes의 종료·재시작 상태만 표시합니다.</p></div>
+            <span className={`fault-phase phase-${fault?.phase ?? "idle"}`}>{fault?.phase ?? "idle"}</span>
           </div>
           <div className="simulation-grid">
-            <button type="button" disabled={busy} className={simulation?.latencyMs ? "simulation-card is-active" : "simulation-card"} onClick={() => void runSimulation("lag", { delayMs: simulation?.latencyMs ? 0 : 350 })}>
-              <span className="sim-icon">≈</span><div><b>Tick latency</b><p>{tickRateHz}Hz 게임 Tick에 실제 지연을 주입</p></div><strong>{simulation?.latencyMs ?? 0} ms</strong>
-            </button>
-            <button type="button" disabled={busy} className={simulation?.forceFullBroadcast ? "simulation-card is-active" : "simulation-card"} onClick={() => void runSimulation("full-broadcast")}>
-              <span className="sim-icon">▦</span><div><b>Full Broadcast</b><p>매 Tick 전체 216×216 Grid 전송</p></div><strong>{simulation?.forceFullBroadcast ? "FULL" : "DELTA"}</strong>
-            </button>
-            <button type="button" disabled={busy} className={simulation?.activeCluster === "dr" ? "simulation-card is-active" : "simulation-card"} onClick={() => { if (window.confirm("Primary 장애 후 Redis Snapshot으로 DR 복구를 실행합니다.")) void runSimulation("primary-failure"); }}>
-              <span className="sim-icon">↻</span><div><b>Primary → DR</b><p>Socket 종료 후 Snapshot 복구·자동 재접속</p></div><strong>{simulation?.activeCluster.toUpperCase() ?? "PRIMARY"}</strong>
+            <button type="button" disabled={busy || fault?.phase === "allocating" || fault?.phase === "restarting"} className={`simulation-card phase-${fault?.phase ?? "idle"}`} onClick={() => { if (window.confirm("이 게임 서버 Pod에 실제 메모리 누수를 시작합니다. Kubernetes가 OOMKilled로 종료하고 자동 재시작하는 과정까지 관측할까요?")) void triggerMemoryOom(); }}>
+              <span className="sim-icon">!</span><div><b>실제 OOMKilled 시작</b><p>{fault?.message ?? "실제 메모리 할당 전입니다."}</p></div><strong>{fault?.phase === "allocating" ? `${fault.allocatedMiB.toFixed(0)} MiB 할당` : fault?.lastTerminationReason ?? "대기"}</strong>
             </button>
           </div>
-          <div className="simulation-disclaimer"><b>HONEST DATA BOUNDARY</b><span>simulation 결과는 위 Kubernetes/Local actual telemetry 값을 덮어쓰지 않습니다.</span></div>
+          <div className="fault-observation-grid"><div><span>대상 Pod</span><b>{fault?.targetPod ?? "—"}</b></div><div><span>재시작 횟수</span><b>{fault?.restartCount ?? "—"}</b></div><div><span>마지막 종료</span><b>{fault?.lastTerminationReason ?? "—"}</b></div><div><span>관측 시각</span><b>{fault ? formatTime(fault.observedAt) : "—"}</b></div></div>
+          <div className="simulation-disclaimer"><b>실측 경계</b><span>완료는 API 응답이 아니라 Kubernetes Pod의 <code>lastState.terminated.reason=OOMKilled</code>와 Ready 복귀로 판정합니다.</span></div>
         </section>
 
         <section className="panel ops-event-panel">

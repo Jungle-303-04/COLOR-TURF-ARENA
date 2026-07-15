@@ -62,15 +62,6 @@ const roomStatusLabels: Record<RoomStatus, string> = {
   ended: "종료",
 };
 
-const chaosLabels: Record<Parameters<typeof api.chaos>[0], string> = {
-  lag: "틱 지연 주입",
-  "full-broadcast": "전체 전송 전환",
-  "primary-failure": "주 서버 장애 및 DR 복구",
-  failover: "DR 전환",
-  "server-shutdown": "게임 서버 종료",
-  reset: "장애 효과 해제",
-};
-
 export const AdminPage = () => {
   const [tokenInput, setTokenInput] = useState(getAdminToken());
   const [authorized, setAuthorized] = useState(false);
@@ -111,8 +102,16 @@ export const AdminPage = () => {
   }, []);
 
   useEffect(() => {
-    void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
-    if (getAdminToken()) void verify();
+    void api.config().then((config) => {
+      setBaseUrl(config.publicBaseUrl);
+      setTickRateHz(config.tickRateHz);
+      if (!config.adminTokenRequired) {
+        setAuthorized(true);
+        setError("");
+      } else if (getAdminToken()) {
+        void verify();
+      }
+    }).catch(() => undefined);
   }, [verify]);
 
   const acceptOpsSnapshot = useCallback((snapshot: OpsSnapshot) => {
@@ -316,9 +315,9 @@ export const AdminPage = () => {
     void run(async () => { const result = await api.roomAction(room.roomCode, action); setRoom(result.room); }, `${actionLabels[action]} 반영 완료`);
   };
 
-  const runChaos = (action: Parameters<typeof api.chaos>[0], warning: string, body?: Record<string, unknown>) => {
-    if (!window.confirm(`${warning}\n\n연결과 게임 상태에 영향을 줄 수 있습니다.`)) return;
-    void run(async () => { setOps(await api.chaos(action, body)); }, `${chaosLabels[action]} 완료`);
+  const runMemoryOom = () => {
+    if (!window.confirm("선택된 게임 서버 Pod에 실제 메모리 누수를 시작합니다. Kubernetes가 OOMKilled로 종료하고 자동 재시작하는 과정을 계속 관측할까요?")) return;
+    void run(async () => { setOps(await api.triggerMemoryOom()); }, "실제 메모리 장애 주입을 시작했습니다");
   };
 
   const joinUrl = room ? `${baseUrl}/play/${room.roomCode}` : "";
@@ -375,7 +374,7 @@ export const AdminPage = () => {
 
           <section className="panel event-panel"><div className="panel-heading"><div><span className="panel-kicker">운영 이벤트 기록</span><h2>배포·장애·복구 이벤트</h2></div><span className="live-chip"><i /> 실시간</span></div><ol className="event-list admin-timeline">{ops?.recentEvents.slice(0, 18).map((event) => <li key={event.id}><time>{formatTime(event.at)}</time><span className={`event-dot source-${event.source}`} /><div><b>{event.type}</b><p>{event.roomCode ? `[${event.roomCode}] ` : ""}{event.message}</p></div></li>)}</ol></section>
 
-          <details className="panel chaos-panel"><summary><span><b>시연 / 장애 주입 제어</b><small>실제 게임 상태에 영향을 주는 시연 전용 제어</small></span><span>펼치기 ▾</span></summary><div className="chaos-grid"><button type="button" onClick={() => runChaos("lag", "게임 틱 처리에 350ms 지연을 주입합니다.", { delayMs: 350 })}>틱 지연 350ms</button><button type="button" onClick={() => runChaos("full-broadcast", "전체 그리드 전송 모드를 전환합니다.")}>전체 전송 전환</button><button type="button" onClick={() => runChaos("primary-failure", "주 서버 장애를 발생시키고 Redis 스냅샷으로 DR 복구합니다.")}>주 서버 장애 → DR</button><button type="button" onClick={() => runChaos("server-shutdown", "게임 서버 종료를 요청합니다.")}>게임 서버 종료</button><button type="button" className="chaos-reset" onClick={() => runChaos("reset", "모든 시연용 장애 상태를 해제합니다.")}>장애 효과 해제</button></div><p>완전 무중단을 주장하지 않습니다. 소켓이 끊긴 뒤 수 초 안에 자동 재접속하고 최근 스냅샷부터 복구하는 흐름입니다.</p></details>
+          <details className="panel chaos-panel"><summary><span><b>실제 장애 주입</b><small>단 하나의 정직한 경로: 메모리 누수 → OOMKilled → 자동 재시작</small></span><span>펼치기 ▾</span></summary><div className="chaos-grid"><button type="button" className="button-danger" disabled={busy || ops?.faultInjection.phase === "allocating" || ops?.faultInjection.phase === "restarting"} onClick={runMemoryOom}>실제 OOMKilled 시작</button></div><div className="fault-observation-grid"><div><span>상태</span><b>{ops?.faultInjection.phase ?? "idle"}</b></div><div><span>할당량</span><b>{ops?.faultInjection.allocatedMiB.toFixed(0) ?? "0"} MiB</b></div><div><span>대상 Pod</span><b>{ops?.faultInjection.targetPod ?? "—"}</b></div><div><span>종료 이유</span><b>{ops?.faultInjection.lastTerminationReason ?? "—"}</b></div></div><p>{ops?.faultInjection.message ?? "내부 상태를 꾸미지 않고 Kubernetes가 관측한 실제 종료와 복귀만 완료로 표시합니다."}</p></details>
           <section className="panel metric-history-panel">
             <div className="panel-heading">
               <div><span className="panel-kicker">실시간 트래픽 추이</span><h2>운영·부하 지표</h2></div>
