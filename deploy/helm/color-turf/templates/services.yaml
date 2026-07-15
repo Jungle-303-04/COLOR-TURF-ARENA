@@ -7,9 +7,9 @@ metadata:
     app.kubernetes.io/component: game-server
     color-turf/release-channel: stable
 spec:
-  # A room has one authoritative lease owner. The web proxy is the stable
-  # client and must keep API and Socket.IO connections on that owner.
-  sessionAffinity: ClientIP
+  # Socket.IO gateways share rooms through Redis and forward mutations to the
+  # lease owner. Do not pin a client IP: separate connections must spread over
+  # the HPA replicas so real network/input work is distributed.
   selector:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: game-server

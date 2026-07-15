@@ -11,6 +11,31 @@ const input = (roomCode: string, sessionId: string, sequence: number, sentAt: nu
 });
 
 describe("GameRoom server authority", () => {
+  it("preserves a live gateway socket across authority snapshot recovery", () => {
+    const room = new GameRoom("ROLL1");
+    room.join("session-roll", "gateway-socket", "Rolling Player");
+
+    const restored = GameRoom.restore(room.serialize(), { preserveConnections: true });
+    const player = restored.snapshot().players[0];
+
+    expect(player?.id).toBe("session-roll");
+    expect(player?.connected).toBe(true);
+    expect(restored.disconnect("session-roll", "different-socket")).toBeNull();
+  });
+
+  it("keeps a resumed session connected when the replaced socket disconnects late", () => {
+    const room = new GameRoom("RACE1");
+    room.join("session-race", "socket-old", "Reconnect Player");
+
+    const resumed = room.join("session-race", "socket-new", "Reconnect Player");
+    expect(resumed.reconnected).toBe(true);
+    expect(room.disconnect("session-race", "socket-old")).toBeNull();
+    expect(room.snapshot().players[0]?.connected).toBe(true);
+
+    expect(room.disconnect("session-race", "socket-new")?.connected).toBe(false);
+    expect(room.snapshot().players[0]?.connected).toBe(false);
+  });
+
   it("uses a square default turf with the same 46,656-cell load", () => {
     const room = new GameRoom("WORLD");
     const snapshot = room.snapshot();

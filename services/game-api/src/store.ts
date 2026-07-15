@@ -3,7 +3,7 @@ import { DEFAULT_GAME_CONFIG, GameRoom, type GameEvent, type PersistedRoomState 
 
 export interface RoomStore {
   create(config?: GameConfig): GameRoom;
-  restore(state: PersistedRoomState): GameRoom;
+  restore(state: PersistedRoomState, preserveConnections?: boolean): GameRoom;
   replace(state: PersistedRoomState): GameRoom;
   remove(roomCode: string): GameRoom | undefined;
   get(roomCode: string): GameRoom | undefined;
@@ -38,10 +38,10 @@ export class MemoryRoomStore implements RoomStore {
     return room;
   }
 
-  restore(state: PersistedRoomState): GameRoom {
+  restore(state: PersistedRoomState, preserveConnections = false): GameRoom {
     const code = state.roomCode.toUpperCase();
     if (this.rooms.has(code)) return this.rooms.get(code)!;
-    const room = GameRoom.restore(state, this.options(code));
+    const room = GameRoom.restore(state, { ...this.options(code), preserveConnections });
     room.setServerIdentity(this.identity());
     this.rooms.set(code, room);
     return room;

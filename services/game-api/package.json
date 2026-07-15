@@ -13,11 +13,12 @@
   },
   "dependencies": {
     "@paint-arena/shared": "*",
+    "@socket.io/redis-adapter": "^8.3.0",
     "express": "^5.2.1",
     "prom-client": "^15.1.3",
     "redis": "^5.8.2",
-    "socket.io-client": "^4.8.3",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

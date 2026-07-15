@@ -65,6 +65,11 @@ export interface GameRoomOptions {
   serverIdentity?: ServerIdentity;
 }
 
+export interface GameRoomRestoreOptions extends GameRoomOptions {
+  /** Preserve gateway socket presence only after the caller verifies it. */
+  preserveConnections?: boolean;
+}
+
 export interface PersistedPlayer {
   id: string;
   nickname: string;
@@ -73,6 +78,9 @@ export interface PersistedPlayer {
   position: Vector2;
   isBot: boolean;
   lastSequence: number;
+  /** Socket.IO IDs are cluster-wide when the Redis adapter is enabled. */
+  socketId?: string;
+  connected?: boolean;
 }
 
 export interface PersistedRoomState {
@@ -150,7 +158,7 @@ export class GameRoom {
     this.grid = Array.from({ length: this.config.gridWidth * this.config.gridHeight }, () => null);
   }
 
-  static restore(state: PersistedRoomState, options: GameRoomOptions = {}): GameRoom {
+  static restore(state: PersistedRoomState, options: GameRoomRestoreOptions = {}): GameRoom {
     if (state.schemaVersion !== 1) throw new Error(`Unsupported room snapshot schema: ${state.schemaVersion}`);
     const room = new GameRoom(state.roomCode, state.config, { ...options, serverIdentity: state.serverIdentity });
     room.matchId = state.matchId;
@@ -170,8 +178,8 @@ export class GameRoom {
     room.players = new Map(state.players.map((player) => [player.id, {
       ...player,
       position: { ...player.position },
-      connected: false,
-      socketId: "",
+      connected: options.preserveConnections ? player.connected ?? false : false,
+      socketId: options.preserveConnections ? player.socketId ?? "" : "",
       input: { x: 0, y: 0 },
       lastInputAt: 0,
       recentInputTimes: [],
@@ -281,9 +289,12 @@ export class GameRoom {
     return this.random() < 0.5 ? "A" : "B";
   }
 
-  disconnect(sessionId: string): PlayerPublic | null {
+  disconnect(sessionId: string, socketId?: string): PlayerPublic | null {
     const player = this.players.get(sessionId);
     if (!player || !player.connected) return null;
+    // Ignore a delayed disconnect from a socket that was already replaced by
+    // a successful resume of the same session.
+    if (socketId && player.socketId !== socketId) return null;
     player.connected = false;
     player.input = { x: 0, y: 0 };
     this.bump();
@@ -595,6 +606,8 @@ export class GameRoom {
         position: { ...player.position },
         isBot: player.isBot,
         lastSequence: player.lastSequence,
+        socketId: player.socketId,
+        connected: player.connected,
       })),
       status: this.status,
       cellCounts: { ...this.cellCounts },

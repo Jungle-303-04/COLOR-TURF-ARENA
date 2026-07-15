@@ -27,6 +27,32 @@ describe("two-client Socket.IO and protected operations flow", () => {
     stop = null;
   });
 
+  it("keeps the replacement socket authoritative after an overlapping session resume", async () => {
+    const gameServer = createGameServer({ adminToken: "test-admin", snapshotIntervalMs: 250 });
+    const running = await gameServer.start(0, "127.0.0.1");
+    stop = gameServer.stop;
+    const createResponse = await fetch(`${running.url}/api/rooms`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ durationSeconds: 20, gridWidth: 40 }),
+    });
+    const created = await createResponse.json() as { room: RoomSnapshot };
+
+    const oldSocket = createClient(running.url, { transports: ["websocket"], reconnection: false });
+    const newSocket = createClient(running.url, { transports: ["websocket"], reconnection: false });
+    clients.push(oldSocket, newSocket);
+    await Promise.all([oldSocket, newSocket].map((client) => new Promise<void>((resolve) => client.once("connect", resolve))));
+
+    const session = { roomCode: created.room.roomCode, sessionId: "session-overlap", nickname: "Overlap" };
+    expect((await emitAck<JoinResult>(oldSocket, "join_room", session)).reconnected).toBe(false);
+    expect((await emitAck<JoinResult>(newSocket, "resume_session", session)).reconnected).toBe(true);
+    oldSocket.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const room = await (await fetch(`${running.url}/api/rooms/${created.room.roomCode}`)).json() as { room: RoomSnapshot };
+    expect(room.room.players.find((player) => player.id === session.sessionId)?.connected).toBe(true);
+  });
+
   it("runs authoritative delta play, boost, auth, ops events and metrics", async () => {
     const gameServer = createGameServer({ publicBaseUrl: "http://demo.local", adminToken: "test-admin", opsEventToken: "test-ops", snapshotIntervalMs: 250 });
     const running = await gameServer.start(0, "127.0.0.1");

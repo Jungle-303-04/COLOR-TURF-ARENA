@@ -27,9 +27,10 @@ import {
   type WatchResult,
 } from "@paint-arena/shared";
 import { BotManager } from "./bots.js";
-import { DEFAULT_GAME_CONFIG, DEFAULT_WORLD_SIZE, type GameEvent, type GameRoom } from "./game.js";
+import { DEFAULT_GAME_CONFIG, DEFAULT_WORLD_SIZE, GameRoom, type GameEvent } from "./game.js";
 import { KubernetesObserver } from "./kubernetes.js";
 import { createMetrics } from "./metrics.js";
+import { RedisRoomCoordinator, RedisSocketCluster } from "./redis-cluster.js";
 import { createSnapshotStorage, type SnapshotStorage } from "./snapshot-store.js";
 import { MemoryRoomStore, summarizeRoom } from "./store.js";
 
@@ -73,6 +74,26 @@ interface RuntimeStats {
   payloadBytes: number[];
   lastSnapshotAt: number | null;
   cpuPercent: number;
+}
+
+type RoomClusterCommand =
+  | { kind: "snapshot"; roomCode: string }
+  | { kind: "join"; roomCode: string; sessionId: string; socketId: string; nickname?: string; isBot: boolean }
+  | { kind: "input"; roomCode: string; sessionId: string; payload: InputPayload }
+  | { kind: "disconnect"; roomCode: string; sessionId: string; socketId: string }
+  | { kind: "action"; roomCode: string; action: string }
+  | { kind: "update"; roomCode: string; patch: Parameters<GameRoom["updateConfig"]>[0] }
+  | { kind: "paint-boost"; roomCode: string; durationMs: number }
+  | { kind: "announce"; roomCode: string; message: string }
+  | { kind: "bots"; roomCode: string; action: "add" | "remove"; count: number };
+
+interface RoomClusterResponse {
+  handled: boolean;
+  snapshot?: RoomSnapshot;
+  join?: JoinResult;
+  input?: InputResult;
+  sessionIds?: string[];
+  error?: string;
 }
 
 export const DEFAULT_TICK_RATE_HZ = 20;
@@ -136,6 +157,11 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const storage = options.snapshotStorage ?? createSnapshotStorage(options.redisUrl);
   const startedAt = new Date().toISOString();
   const ownerId = `${options.clusterName ?? process.env.CLUSTER_NAME ?? "primary"}:${options.podName ?? process.env.POD_NAME ?? "local"}:${randomUUID()}`;
+  const redisUrl = options.redisUrl ?? process.env.REDIS_URL;
+  const socketCluster = redisUrl ? new RedisSocketCluster(redisUrl) : null;
+  const roomCoordinator = redisUrl
+    ? new RedisRoomCoordinator<RoomClusterCommand, RoomClusterResponse>(redisUrl, ownerId)
+    : null;
   const leaseTtlMs = 7000;
   const snapshotIntervalMs = Math.max(250, options.snapshotIntervalMs ?? numeric(process.env.SNAPSHOT_INTERVAL_MS, 1000));
   const adminToken = options.adminToken ?? process.env.ADMIN_TOKEN ?? "demo-admin";
@@ -311,7 +337,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       simulation.podRestartMarkerUntil = null;
       simulation.updatedAt = new Date().toISOString();
     }
-    const summaries = roomSummaries();
+    const summaries = await clusterRoomSummaries();
     metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries);
     return {
       observedAt: new Date(now).toISOString(),
@@ -382,11 +408,26 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const recoverAvailableRooms = async (): Promise<number> => {
     let recovered = 0;
     const persistedRooms = await storage.loadAll();
+    const hasLiveSessions = persistedRooms.some((state) => state.players.some((player) => player.connected && player.socketId));
+    const liveSocketIds = hasLiveSessions
+      ? new Set((await io.fetchSockets()).map((socket) => socket.id))
+      : new Set<string>();
     for (const state of persistedRooms) {
       if (roomStore.get(state.roomCode)) continue;
       if (!(await storage.acquireLease(state.roomCode, ownerId, leaseTtlMs))) continue;
       const recoveryStarted = performance.now();
-      const room = roomStore.restore(state);
+      const room = roomStore.restore(state, true);
+      for (const player of state.players) {
+        if (player.connected && player.socketId && !liveSocketIds.has(player.socketId)) {
+          room.disconnect(player.id, player.socketId);
+        }
+      }
+      const restoredBots = botManager.restore(
+        room.roomCode,
+        state.players
+          .filter((player) => player.isBot)
+          .map((player) => ({ sessionId: player.id, nickname: player.nickname, lastSequence: player.lastSequence })),
+      );
       setIdentity(room);
       const elapsed = (performance.now() - recoveryStarted) / 1000;
       metrics.gameRoomRecoveryDuration.observe({
@@ -396,7 +437,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       }, elapsed);
       addEvent("SNAPSHOT_RESTORED", `Recovered room ${room.roomCode} from ${storage.kind}`, "system", room.roomCode, {
         recoveryTimeMs: Math.round(elapsed * 1000),
+        restoredBots: restoredBots.length,
       });
+      // Existing clients may still be connected to healthy gateway replicas.
+      // Publish the recovered snapshot so play resumes without waiting for a
+      // browser reconnect after the authority pod rolls.
+      broadcastSnapshot(room);
       recovered += 1;
     }
     return recovered;
@@ -409,6 +455,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       for (const room of [...roomStore.list()]) {
         const renewed = await storage.renewLease(room.roomCode, ownerId, leaseTtlMs);
         if (renewed) continue;
+        botManager.stopRoom(room.roomCode, false);
         roomStore.remove(room.roomCode);
         addEvent("ROOM_LEASE_LOST", `Stopped serving ${room.roomCode} after lease loss`, "system", room.roomCode);
         for (const socket of await io.fetchSockets()) {
@@ -473,7 +520,9 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   };
 
   const botManager = new BotManager(
-    () => boundUrl,
+    // In Kubernetes, route bot sockets through the Service so each connection
+    // exercises a real gateway replica. Local development stays in-process.
+    () => process.env.BOT_GATEWAY_URL?.replace(/\/$/, "") || boundUrl,
     () => socketPath,
     (roomCode, sessionId) => { roomStore.get(roomCode)?.removeBot(sessionId); },
   );
@@ -486,6 +535,106 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     if (action === "reset") return room.reset();
     if (action === "reassign") return room.reassignTeams();
     throw new Error("Unknown action");
+  };
+
+  const executeLocalRoomCommand = async (command: RoomClusterCommand): Promise<RoomClusterResponse> => {
+    const room = roomStore.get(command.roomCode);
+    if (!room) return { handled: false };
+    try {
+      if (command.kind === "snapshot") {
+        setIdentity(room);
+        return { handled: true, snapshot: room.snapshot() };
+      }
+      if (command.kind === "join") {
+        const joined = room.join(command.sessionId, command.socketId, command.nickname, command.isBot);
+        setIdentity(room);
+        const snapshot = room.snapshot();
+        broadcastTick(room);
+        return {
+          handled: true,
+          snapshot,
+          join: {
+            ok: true,
+            player: joined.player,
+            snapshot,
+            sessionId: command.sessionId,
+            socketPath,
+            reconnected: joined.reconnected,
+          },
+        };
+      }
+      if (command.kind === "input") {
+        return { handled: true, input: room.handleInput(command.sessionId, command.payload) };
+      }
+      if (command.kind === "disconnect") {
+        if (room.disconnect(command.sessionId, command.socketId)) broadcastSnapshot(room);
+        return { handled: true };
+      }
+      if (command.kind === "action") {
+        roomAction(room, command.action);
+        return { handled: true, snapshot: broadcastSnapshot(room) };
+      }
+      if (command.kind === "update") {
+        room.updateConfig(command.patch);
+        return { handled: true, snapshot: broadcastSnapshot(room) };
+      }
+      if (command.kind === "paint-boost") {
+        room.activatePaintBoost(command.durationMs);
+        return { handled: true, snapshot: broadcastSnapshot(room) };
+      }
+      if (command.kind === "announce") {
+        room.announce(command.message);
+        broadcastTick(room);
+        const existingTimer = announcementTimers.get(room.roomCode);
+        if (existingTimer) clearTimeout(existingTimer);
+        if (command.message) {
+          announcementTimers.set(room.roomCode, setTimeout(() => {
+            announcementTimers.delete(room.roomCode);
+            const current = roomStore.get(room.roomCode);
+            if (!current || current.snapshot().announcement !== command.message) return;
+            current.announce("");
+            broadcastTick(current);
+          }, 2500));
+        }
+        return { handled: true, snapshot: room.snapshot() };
+      }
+
+      const sessionIds = command.action === "add"
+        ? botManager.add(room.roomCode, command.count)
+        : botManager.remove(room.roomCode, command.count);
+      addEvent(
+        `bot.${command.action}`,
+        `${sessionIds.length} bot(s) ${command.action === "add" ? "started" : "removed"}`,
+        "admin",
+        room.roomCode,
+      );
+      return { handled: true, sessionIds };
+    } catch (error) {
+      return {
+        handled: true,
+        error: error instanceof Error ? error.message : "Room command failed",
+      };
+    }
+  };
+
+  const dispatchRoomCommand = async (command: RoomClusterCommand): Promise<RoomClusterResponse> => {
+    if (!roomCoordinator) return executeLocalRoomCommand(command);
+    return await roomCoordinator.request(command.roomCode, command) ?? { handled: false };
+  };
+
+  const clusterRoomSummaries = async () => {
+    const states = await storage.loadAll();
+    const roomCodes = new Set([
+      ...states.map((state) => state.roomCode),
+      ...roomStore.list().map((room) => room.roomCode),
+    ]);
+    const byCode = new Map(states.map((state) => [state.roomCode, state]));
+    return (await Promise.all([...roomCodes].map(async (roomCode) => {
+      const response = await dispatchRoomCommand({ kind: "snapshot", roomCode });
+      if (response.snapshot) return summarizeRoom(response.snapshot);
+      const persisted = byCode.get(roomCode);
+      return persisted ? summarizeRoom(GameRoom.restore(persisted).snapshot()) : null;
+    }))).filter((summary): summary is NonNullable<typeof summary> => summary !== null);
   };
 
   app.set("trust proxy", true);
@@ -528,7 +677,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json(config);
   });
 
-  app.get("/api/rooms", (_request, response) => response.json({ rooms: roomSummaries() }));
+  app.get("/api/rooms", async (_request, response) => response.json({ rooms: await clusterRoomSummaries() }));
   app.post("/api/rooms", requireAdmin, async (request, response) => {
     const room = roomStore.create(createConfig(request.body as Record<string, unknown>));
     await storage.acquireLease(room.roomCode, ownerId, leaseTtlMs);
@@ -543,45 +692,48 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       socketPath,
     });
   });
-  app.get("/api/rooms/:roomCode", (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
-    setIdentity(room);
-    response.json({ room: room.snapshot() });
+  const loadRoom = async (roomCode: string) => dispatchRoomCommand({ kind: "snapshot", roomCode });
+
+  app.get("/api/rooms/:roomCode", async (request, response) => {
+    const result = await loadRoom(String(request.params.roomCode ?? ""));
+    if (!result.snapshot) { response.status(404).json({ error: "Room not found" }); return; }
+    response.json({ room: result.snapshot });
   });
-  app.get("/api/rooms/:roomCode/state", (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
-    setIdentity(room);
-    response.json({ room: room.snapshot() });
+  app.get("/api/rooms/:roomCode/state", async (request, response) => {
+    const result = await loadRoom(String(request.params.roomCode ?? ""));
+    if (!result.snapshot) { response.status(404).json({ error: "Room not found" }); return; }
+    response.json({ room: result.snapshot });
   });
-  app.post("/api/rooms/:roomCode/join", (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
-    response.json({ roomId: room.roomCode, releaseChannel: room.releaseChannel, socketPath, sessionId: randomUUID() });
+  app.post("/api/rooms/:roomCode/join", async (request, response) => {
+    const result = await loadRoom(String(request.params.roomCode ?? ""));
+    if (!result.snapshot) { response.status(404).json({ error: "Room not found" }); return; }
+    response.json({
+      roomId: result.snapshot.roomCode,
+      releaseChannel: result.snapshot.config.releaseChannel,
+      socketPath,
+      sessionId: randomUUID(),
+    });
   });
-  app.patch("/api/rooms/:roomCode", requireAdmin, (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
-    try {
-      const snapshot = room.updateConfig(request.body as Parameters<GameRoom["updateConfig"]>[0]);
-      setIdentity(room);
-      broadcastSnapshot(room);
-      response.json({ room: snapshot });
-    } catch (error) {
-      response.status(409).json({ error: error instanceof Error ? error.message : "Unable to update room" });
-    }
+  app.patch("/api/rooms/:roomCode", requireAdmin, async (request, response) => {
+    const result = await dispatchRoomCommand({
+      kind: "update",
+      roomCode: String(request.params.roomCode ?? ""),
+      patch: request.body as Parameters<GameRoom["updateConfig"]>[0],
+    });
+    if (!result.handled) { response.status(404).json({ error: "Room not found" }); return; }
+    if (result.error || !result.snapshot) { response.status(409).json({ error: result.error ?? "Unable to update room" }); return; }
+    response.json({ room: result.snapshot });
   });
 
-  const actionHandler = (action: string) => (request: Request, response: Response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
-    try {
-      roomAction(room, action);
-      response.json({ room: broadcastSnapshot(room) });
-    } catch (error) {
-      response.status(409).json({ error: error instanceof Error ? error.message : "Action failed" });
-    }
+  const actionHandler = (action: string) => async (request: Request, response: Response) => {
+    const result = await dispatchRoomCommand({
+      kind: "action",
+      roomCode: String(request.params.roomCode ?? ""),
+      action,
+    });
+    if (!result.handled) { response.status(404).json({ error: "Room not found" }); return; }
+    if (result.error || !result.snapshot) { response.status(409).json({ error: result.error ?? "Action failed" }); return; }
+    response.json({ room: result.snapshot });
   };
 
   app.post("/api/rooms/:roomCode/actions", requireAdmin, (request, response) => actionHandler(String((request.body as Record<string, unknown>).action ?? ""))(request, response));
@@ -589,40 +741,41 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     app.post(`/api/admin/rooms/:roomCode/${action}`, requireAdmin, actionHandler(action));
   }
   app.post("/api/admin/rooms/:roomCode/reassign", requireAdmin, actionHandler("reassign"));
-  app.post("/api/admin/rooms/:roomCode/events/paint-boost", requireAdmin, (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
+  app.post("/api/admin/rooms/:roomCode/events/paint-boost", requireAdmin, async (request, response) => {
     const durationMs = numeric((request.body as Record<string, unknown>).durationMs, 10_000);
-    room.activatePaintBoost(durationMs);
-    response.json({ room: broadcastSnapshot(room) });
+    const result = await dispatchRoomCommand({
+      kind: "paint-boost",
+      roomCode: String(request.params.roomCode ?? ""),
+      durationMs,
+    });
+    if (!result.handled) { response.status(404).json({ error: "Room not found" }); return; }
+    if (result.error || !result.snapshot) { response.status(409).json({ error: result.error ?? "Action failed" }); return; }
+    response.json({ room: result.snapshot });
   });
-  app.post("/api/admin/rooms/:roomCode/announcement", requireAdmin, (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
+  app.post("/api/admin/rooms/:roomCode/announcement", requireAdmin, async (request, response) => {
     const message = String((request.body as Record<string, unknown>).message ?? "").trim().slice(0, 160);
-    room.announce(message);
-    broadcastTick(room);
-    const existingTimer = announcementTimers.get(room.roomCode);
-    if (existingTimer) clearTimeout(existingTimer);
-    if (message) {
-      announcementTimers.set(room.roomCode, setTimeout(() => {
-        announcementTimers.delete(room.roomCode);
-        const current = roomStore.get(room.roomCode);
-        if (!current || current.snapshot().announcement !== message) return;
-        current.announce("");
-        broadcastTick(current);
-      }, 2500));
-    }
-    response.json({ room: room.snapshot() });
+    const result = await dispatchRoomCommand({
+      kind: "announce",
+      roomCode: String(request.params.roomCode ?? ""),
+      message,
+    });
+    if (!result.handled) { response.status(404).json({ error: "Room not found" }); return; }
+    if (result.error || !result.snapshot) { response.status(409).json({ error: result.error ?? "Action failed" }); return; }
+    response.json({ room: result.snapshot });
   });
-  app.post("/api/admin/rooms/:roomCode/bots", requireAdmin, (request, response) => {
-    const room = roomStore.get(String(request.params.roomCode ?? ""));
-    if (!room) { response.status(404).json({ error: "Room not found" }); return; }
+  app.post("/api/admin/rooms/:roomCode/bots", requireAdmin, async (request, response) => {
     const body = request.body as Record<string, unknown>;
     const count = Math.max(1, Math.min(500, Math.round(numeric(body.count, 1))));
     const action = body.action === "remove" ? "remove" : "add";
-    const sessionIds = action === "add" ? botManager.add(room.roomCode, count) : botManager.remove(room.roomCode, count);
-    addEvent(`bot.${action}`, `${sessionIds.length} bot(s) ${action === "add" ? "started" : "removed"}`, "admin", room.roomCode);
+    const result = await dispatchRoomCommand({
+      kind: "bots",
+      roomCode: String(request.params.roomCode ?? ""),
+      action,
+      count,
+    });
+    if (!result.handled) { response.status(404).json({ error: "Room not found" }); return; }
+    if (result.error) { response.status(409).json({ error: result.error }); return; }
+    const sessionIds = result.sessionIds ?? [];
     response.json({ action, count: sessionIds.length, sessionIds });
   });
 
@@ -695,49 +848,49 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     void chaosHandler(mapped, request, response);
   });
 
-  const joinRoomChannel = (socket: Socket, roomCode: string): WatchResult => {
-    const room = roomStore.get(roomCode);
-    if (!room) return { ok: false, error: "Room not found" };
-    setIdentity(room);
+  const joinRoomChannel = async (socket: Socket, roomCode: string): Promise<WatchResult> => {
+    const result = await loadRoom(roomCode);
+    if (!result.snapshot) return { ok: false, error: "Room not found" };
     const data = socket.data as SocketData;
-    if (data.roomCode && data.roomCode !== room.roomCode) void socket.leave(roomChannel(data.roomCode));
-    void socket.join(roomChannel(room.roomCode));
-    data.roomCode = room.roomCode;
-    return { ok: true, snapshot: room.snapshot() };
+    if (data.roomCode && data.roomCode !== result.snapshot.roomCode) void socket.leave(roomChannel(data.roomCode));
+    await socket.join(roomChannel(result.snapshot.roomCode));
+    data.roomCode = result.snapshot.roomCode;
+    return { ok: true, snapshot: result.snapshot };
   };
 
-  const watchRoom = (socket: Socket, roomCode: string, role: NonNullable<SocketData["role"]>): WatchResult => {
-    const result = joinRoomChannel(socket, roomCode);
+  const watchRoom = async (socket: Socket, roomCode: string, role: NonNullable<SocketData["role"]>): Promise<WatchResult> => {
+    const result = await joinRoomChannel(socket, roomCode);
     if (result.ok) (socket.data as SocketData).role = role;
     return result;
   };
 
-  const processInput = (socket: Socket, rawPayload: unknown, acknowledge?: (result: InputResult) => void): void => {
+  const processInput = async (socket: Socket, rawPayload: unknown, acknowledge?: (result: InputResult) => void): Promise<void> => {
     const parsed = inputPayloadSchema.safeParse(rawPayload);
     if (!parsed.success) { acknowledge?.({ ok: false, reason: "invalid-direction" }); return; }
     const payload: InputPayload = parsed.data;
     const sessionId = payload.sessionId ?? payload.clientId!;
     const receivedAt = Date.now();
-    const room = roomStore.get(payload.roomCode);
-    let result: InputResult;
-    if (!room || (socket.data as SocketData).sessionId !== sessionId) result = { ok: false, reason: "unknown-player" };
-    else result = room.handleInput(sessionId, payload);
+    const response = (socket.data as SocketData).sessionId === sessionId
+      ? await dispatchRoomCommand({ kind: "input", roomCode: payload.roomCode, sessionId, payload })
+      : { handled: false };
+    const result: InputResult = response.input ?? { ok: false, reason: "unknown-player" };
     const latency = Math.max(0, Date.now() - payload.sentAt);
     stats.totalInputEvents += 1;
     stats.inputTimes.push(receivedAt);
     pushWindow(stats.inputLatenciesMs, latency);
     if (!result.ok) stats.rejectedInputEvents += 1;
     metrics.gameInputEvents.inc({ result: result.ok ? "accepted" : result.reason ?? "rejected" });
-    if (room) {
-      setIdentity(room);
-      metrics.gameInputQueueDelay.observe({ room_id: room.roomCode, version: room.snapshot().server.version, cluster: room.snapshot().server.cluster }, latency / 1000);
-    }
+    metrics.gameInputQueueDelay.observe({
+      room_id: payload.roomCode.toUpperCase(),
+      version: baseIdentity().version,
+      cluster: baseIdentity().cluster,
+    }, latency / 1000);
     acknowledge?.(result);
   };
 
   io.on("connection", (socket) => {
-    socket.on("spectator_subscribe", (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
-    socket.on("room.watch", (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
+    socket.on("spectator_subscribe", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
+    socket.on("room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
     socket.on("ops.watch", async (acknowledge?: (snapshot: OpsSnapshot) => void) => {
       const data = socket.data as SocketData;
       if (data.role !== "admin") data.role = "ops";
@@ -749,45 +902,54 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       if (ok) { (socket.data as SocketData).role = "admin"; void socket.join("ops"); }
       acknowledge?.({ ok });
     });
-    socket.on("admin.room.watch", (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => {
+    socket.on("admin.room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => {
       if ((socket.data as SocketData).role !== "admin") {
         acknowledge?.({ ok: false, error: "Unauthorized" });
         return;
       }
-      acknowledge?.(joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase()));
+      acknowledge?.(await joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase()));
     });
-    const join = (rawPayload: unknown, acknowledge?: (result: JoinResult) => void) => {
+    const join = async (rawPayload: unknown, acknowledge?: (result: JoinResult) => void) => {
       const parsed = joinPayloadSchema.safeParse(rawPayload);
       if (!parsed.success) { acknowledge?.({ ok: false, error: "Invalid join payload" }); return; }
       const payload = parsed.data;
       const sessionId = payload.sessionId ?? payload.clientId!;
-      const room = roomStore.get(payload.roomCode);
-      if (!room) { acknowledge?.({ ok: false, error: "Room not found" }); return; }
-      const joined = room.join(sessionId, socket.id, payload.nickname, payload.isBot ?? false);
+      const response = await dispatchRoomCommand({
+        kind: "join",
+        roomCode: payload.roomCode,
+        sessionId,
+        socketId: socket.id,
+        ...(payload.nickname ? { nickname: payload.nickname } : {}),
+        isBot: payload.isBot ?? false,
+      });
+      const joined = response.join;
+      if (!response.handled || !joined?.ok || !joined.snapshot || !joined.player) {
+        acknowledge?.({ ok: false, error: response.error ?? "Room not found" });
+        return;
+      }
       (socket.data as SocketData).role = "controller";
-      (socket.data as SocketData).roomCode = room.roomCode;
+      (socket.data as SocketData).roomCode = joined.snapshot.roomCode;
       (socket.data as SocketData).sessionId = sessionId;
-      void socket.join(roomChannel(room.roomCode));
-      setIdentity(room);
+      await socket.join(roomChannel(joined.snapshot.roomCode));
       if (joined.reconnected) {
         stats.reconnects += 1;
-        metrics.gameClientReconnects.inc({ room_id: room.roomCode, version: room.snapshot().server.version, cluster: room.snapshot().server.cluster });
-        socket.emit("reconnect_status", { status: "restored", roomCode: room.roomCode });
+        metrics.gameClientReconnects.inc({
+          room_id: joined.snapshot.roomCode,
+          version: joined.snapshot.server.version,
+          cluster: joined.snapshot.server.cluster,
+        });
+        socket.emit("reconnect_status", { status: "restored", roomCode: joined.snapshot.roomCode });
       }
       socket.emit("join_accepted", joined.player);
       socket.emit("team.assigned", joined.player);
-      const snapshot = room.snapshot();
-      socket.emit("room_snapshot", snapshot);
-      acknowledge?.({ ok: true, player: joined.player, snapshot, sessionId, socketPath, reconnected: joined.reconnected });
-      // Presence changes use the normal delta path so large-world load tests do
-      // not rebroadcast the entire grid once for every joining bot.
-      broadcastTick(room);
+      socket.emit("room_snapshot", joined.snapshot);
+      acknowledge?.(joined);
     };
     socket.on("join_room", join);
     socket.on("resume_session", join);
     socket.on("room.join", join);
-    socket.on("player_input", (payload: unknown, acknowledge?: (result: InputResult) => void) => processInput(socket, payload, acknowledge));
-    socket.on("game.input", (payload: unknown, acknowledge?: (result: InputResult) => void) => processInput(socket, payload, acknowledge));
+    socket.on("player_input", (payload: unknown, acknowledge?: (result: InputResult) => void) => void processInput(socket, payload, acknowledge));
+    socket.on("game.input", (payload: unknown, acknowledge?: (result: InputResult) => void) => void processInput(socket, payload, acknowledge));
     socket.on("client_ping", (payload: { sentAt?: number }, acknowledge?: (result: { sentAt: number; serverTimestamp: number }) => void) => {
       const sentAt = numeric(payload?.sentAt, Date.now());
       const rtt = Math.max(0, Date.now() - sentAt);
@@ -798,23 +960,38 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       stats.disconnects += 1;
       const data = socket.data as SocketData;
       if (data.role === "controller" && data.roomCode && data.sessionId) {
-        const room = roomStore.get(data.roomCode);
-        if (room?.disconnect(data.sessionId)) broadcastSnapshot(room);
+        void dispatchRoomCommand({
+          kind: "disconnect",
+          roomCode: data.roomCode,
+          sessionId: data.sessionId,
+          socketId: socket.id,
+        });
       }
     });
   });
 
   const start = async (port = Number(process.env.PORT ?? 3001), host = process.env.HOST ?? "0.0.0.0"): Promise<RunningGameServer> => {
+    if (socketCluster) await socketCluster.attach(io);
     await storage.connect();
-    await recoverAvailableRooms();
-    await new Promise<void>((resolve, reject) => {
-      httpServer.once("error", reject);
-      httpServer.listen(port, host, () => { httpServer.off("error", reject); resolve(); });
-    });
+    if (roomCoordinator) await roomCoordinator.connect(executeLocalRoomCommand);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        httpServer.once("error", reject);
+        httpServer.listen(port, host, () => { httpServer.off("error", reject); resolve(); });
+      });
+    } catch (error) {
+      if (roomCoordinator) await roomCoordinator.close();
+      if (socketCluster) await socketCluster.close();
+      await storage.close();
+      throw error;
+    }
     const address = httpServer.address() as AddressInfo;
     boundUrl = `http://127.0.0.1:${address.port}`;
+    await recoverAvailableRooms();
     tickTimer = setInterval(() => void runTicks(), DEFAULT_TICK_INTERVAL_MS);
-    opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.to("ops").emit("ops.snapshot", snapshot)), 1000);
+    // Every gateway computes the same cluster room summary, but only its local
+    // admin sockets need that sample. Avoid N replicas broadcasting N copies.
+    opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.local.to("ops").emit("ops.snapshot", snapshot)), 1000);
     snapshotTimer = setInterval(() => void persistRooms().catch((error) => addEvent("snapshot.failed", error instanceof Error ? error.message : "Snapshot failed", "system")), snapshotIntervalMs);
     leaseTimer = setInterval(() => {
       void maintainLeasesAndRecover().catch((error) => addEvent(
@@ -835,7 +1012,9 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   };
 
   const stop = async (): Promise<void> => {
-    botManager.stopAll();
+    // Bots are part of the live room load. Preserve their sessions in the
+    // snapshot so the next authority can recreate them after a rolling update.
+    botManager.stopAll(false);
     if (tickTimer) clearInterval(tickTimer);
     if (opsTimer) clearInterval(opsTimer);
     if (snapshotTimer) clearInterval(snapshotTimer);
@@ -853,6 +1032,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }
     await new Promise<void>((resolve) => io.close(() => resolve()));
     if (httpServer.listening) await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
+    if (roomCoordinator) await roomCoordinator.close();
+    if (socketCluster) await socketCluster.close();
     await storage.close();
   };
 

@@ -6,6 +6,7 @@ metadata:
     {{- include "color-turf.labels" . | nindent 4 }}
 data:
   PUBLIC_BASE_URL: {{ .Values.server.publicBaseUrl | quote }}
+  BOT_GATEWAY_URL: {{ .Values.server.botGatewayUrl | default "http://server-stable:3001" | quote }}
   REDIS_URL: {{ .Values.server.redisUrl | quote }}
   SNAPSHOT_INTERVAL_MS: {{ .Values.server.snapshotIntervalMs | quote }}
   GIT_SHA: {{ .Values.server.gitSha | quote }}
