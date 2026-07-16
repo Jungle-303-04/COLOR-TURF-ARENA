@@ -88,11 +88,11 @@ export class RedisRoomCoordinator<TCommand, TResponse> {
     }
   }
 
-  async request(roomCode: string, command: TCommand): Promise<TResponse | null> {
+  async request(roomCode: string, command: TCommand, timeoutMs = this.timeoutMs): Promise<TResponse | null> {
     const ownerId = await this.locate(roomCode);
     if (!ownerId) return null;
     if (ownerId === this.ownerId) return this.handler?.(command) ?? null;
-    const first = await this.requestOwner(ownerId, roomCode, command);
+    const first = await this.requestOwner(ownerId, roomCode, command, timeoutMs);
     if (first !== null) return first;
 
     // The authority may have changed during a rolling restart. Retry once only
@@ -100,17 +100,22 @@ export class RedisRoomCoordinator<TCommand, TResponse> {
     const nextOwnerId = await this.locate(roomCode);
     if (!nextOwnerId || nextOwnerId === ownerId) return null;
     if (nextOwnerId === this.ownerId) return this.handler?.(command) ?? null;
-    return this.requestOwner(nextOwnerId, roomCode, command);
+    return this.requestOwner(nextOwnerId, roomCode, command, timeoutMs);
   }
 
-  private async requestOwner(ownerId: string, roomCode: string, command: TCommand): Promise<TResponse | null> {
+  private async requestOwner(
+    ownerId: string,
+    roomCode: string,
+    command: TCommand,
+    timeoutMs: number,
+  ): Promise<TResponse | null> {
     if (!this.publisher.isReady) return null;
     const id = randomUUID();
     const result = new Promise<TResponse | null>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         resolve(null);
-      }, this.timeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { resolve, timer });
     });
     const request: RpcRequest<TCommand> = { id, requesterId: this.ownerId, roomCode, command };

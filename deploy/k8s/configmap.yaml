@@ -10,8 +10,7 @@ data:
   RELEASE_CHANNEL: stable
   BROADCAST_MODE: delta
   SNAPSHOT_INTERVAL_MS: "1000"
-  ADMIN_TOKEN: demo-admin
-  OPS_EVENT_TOKEN: demo-ops
+  ALLOW_DEMO_SERVER_SHUTDOWN: "false"
   IMAGE_TAG: "paint-arena-game-api:1.0.0"
   PUBLIC_BASE_URL: "http://localhost:30080"
   KUBERNETES_LABEL_SELECTOR: "app.kubernetes.io/name=paint-arena-game-api"

@@ -2,7 +2,7 @@
 
 검증일: 2026-07-16 (Asia/Seoul)
 
-이 문서는 현재 checkout에서 직접 실행한 결과를 기록한다. 로컬에서 입증한 항목과 물리 휴대폰, 실제 Kubernetes 클러스터, 외부 트래픽 전환이 필요한 항목을 구분한다.
+이 문서는 checkout에서 직접 실행한 결과와 그 이후 추가되어 재검증을 기다리는 변경을 함께 기록한다. 기존 PASS와 화면 증거는 각 검증 실행 시점의 revision에 대한 기록이며, 아직 다시 실행하지 않은 변경은 별도 `검증 대기` 절에서 구분한다. 로컬에서 입증한 항목과 물리 휴대폰, 실제 Kubernetes 클러스터, 외부 트래픽 전환이 필요한 항목도 나눠 적는다.
 
 ## 자동·정적 검증
 
@@ -24,7 +24,7 @@
 - 플레이 카메라는 `72×72` 정사각형 cells만 표시해 전체 월드의 1/9을 노출한다. 중앙·좌상단·우하단·작은 월드 경계 조건을 단위 테스트했다.
 - 플레이어 좌표는 30Hz 서버 상태 사이를 약 33ms 동안 보간하며, 시작·중간·종료 좌표와 범위 제한을 단위 테스트했다. 판정 좌표는 서버 상태를 그대로 유지한다.
 - Windows 로컬 서버에서 `/api/config`의 `tickRateHz=30`을 확인하고 실제 Socket.IO 관전자 Delta를 3.007초 동안 측정했다. 90회가 수신되어 `29.93 updates/s`였으며, 누적 시간 오차를 보정하는 Tick 스케줄러가 설정 주기를 실제 전송에도 유지함을 확인했다.
-- 관리자 화면은 게임 관전, 게임·봇 제어, 운영 지표를 세 탭으로 분리한다. 지표 카드는 30Hz Tick 예산과 입력·이벤트 루프·CPU 임계치를 상태 색상으로 표시하며, 각 `?` 툴팁은 `/api/config`, `/api/ops`, Node.js 런타임 또는 Kubernetes API 중 실제 출처를 명시한다.
+- 당시 관리자 화면은 게임 관전, 게임·봇 제어, 운영 지표를 세 탭으로 분리했다. 지표 카드는 30Hz Tick 예산과 입력·이벤트 루프·CPU 임계치를 상태 색상으로 표시하며, 각 `?` 툴팁은 `/api/config`, `/api/ops`, Node.js 런타임 또는 Kubernetes API 중 실제 출처를 명시했다. 현재 탭 명칭과 확장된 도움말 메타데이터는 아래 `검증 대기` 절에 기록한다.
 - 새 경기장 설정은 108/216/270 정사각형 맵 프리셋과 직접 크기 입력, 페인트 반경, A/B 팀 색상을 제공한다. 가로·세로는 항상 같은 값으로 서버 생성 API에 전달한다.
 - 참가 닉네임을 비워도 payload에서 nickname을 생략하며, 서버가 만든 `Guest-N`을 화면·재접속 Session·localStorage에 저장한다. 명시한 닉네임은 앞뒤 공백을 제거한다.
 - `/ops`는 기존 처리량·Tick·CPU·메모리뿐 아니라 실제 `OpsSnapshot`의 입력 지연 P95, Event Loop P95, reconnect/disconnect 누계, uptime을 한국어 카드와 출처 툴팁으로 표시한다.
@@ -64,7 +64,7 @@
 ## 2026-07-16 관리자 탭·참가자 브라우저 재검증
 
 - 실제 Socket.IO 클라이언트 2개가 방에 입장해 서로 다른 팀을 배정받고, Start → 양쪽 이동 입력·채색 Delta → Pause 중 입력 거부 → Resume → End → 양 팀 최종 점수와 운영 이벤트까지 확인하는 전체 경기 smoke test를 추가했다.
-- `/admin`에서 `게임 진행 상황`, `게임·봇 제어`, `운영 지표` 세 탭이 각각 필요한 패널만 노출하는지 DOM과 화면으로 확인했다.
+- 당시 `/admin` UI 명칭인 `게임 진행 상황`, `게임·봇 제어`, `운영 지표` 세 탭이 각각 필요한 패널만 노출하는지 DOM과 화면으로 확인했다. 이후 현재 명칭은 `전체 게임 진행`, `봇·부하 제어`, `운영 지표`로 변경됐다.
 - 운영 지표의 게임 Tick P95 `?`를 열어 지표 의미, 정상 기준, `/api/config`·`/api/ops`·Node.js 런타임·Kubernetes API 중 실제 수집 출처가 키보드 포커스와 화면에 노출되는 것을 확인했다.
 - 제어 탭에서 실제 WebSocket 봇을 `1개 → 10개 → 15개`로 추가했다. 경기 시작 뒤 관리자 스트림이 초당 `29~30회`를 표시했고 점유율·참가자 수가 실시간으로 변했다. 빠른 `＋ 봇 5개`와 `모두 회수`도 UI에서 실행해 최종 봇 `0개`를 확인했다.
 - 반응형 규칙이 이벤트·공지 카드에 불필요한 35rem 높이와 빈 열을 만들던 문제를 발견했다. 제어 탭 전용 3열 배치를 적용해 Paint Boost, 빠른 봇 제어, 공지 전송을 한 행에서 읽고 조작할 수 있게 수정했다.
@@ -76,10 +76,10 @@
 
 - Playwright Chromium이 빈 임시 포트에 메모리 API와 Vite를 직접 띄워 관리자 로그인·방 생성, 모바일 `390×844` 참가, 닉네임·팀 배정, 경기 시작, 실제 Pointer 조이스틱, 관전 점수 증가, Paint Boost 양 화면 표시, offline → online Overlay와 동일 Session·닉네임·팀·sequence 복구를 검증했다. 기본 실행과 `--repeat-each=3` 모두 통과했고 teardown 뒤 임시 listener는 남지 않았다.
 - Stable API가 Canary 방 생성을 `server-canary`로 위임하고 Join API가 `/socket/canary`를 반환하는 경로를 Compose에서 검증했다. 방 `WQ2X9`은 `compose-canary-primary`, `v1.2.0`, `releaseChannel=canary`, `broadcastMode=full`로 실제 연결·이동·채색됐고 Canary Bot 2개도 별도 Socket 경로로 접속했다. 결과는 `docs/evidence/canary-routing-2026-07-16.json`에 저장했다.
-- 관리자 운영 지표는 선택 방의 release channel을 `/api/ops?releaseChannel=...`로 조회한다. 별도 Canary가 있으면 Canary 프로세스의 실제 CPU·Event Loop·Payload·Socket을 사용하고, 단일 프로세스 개발 환경에서는 Stable 프로세스라는 사실을 그대로 표시한다. `docs/evidence/screenshots/admin-canary-metrics.png`에서 `CANARY · v1.2.0`, 실제 지표 카드·그래프와 출처 툴팁을 확인했다.
+- 이 검증 시점의 관리자 운영 지표는 선택 방의 release channel을 `/api/ops?releaseChannel=...`로 조회했다. 별도 Canary가 있으면 Canary 프로세스의 실제 CPU·Event Loop·Payload·Socket을 사용하고, 단일 프로세스 개발 환경에서는 Stable 프로세스라는 사실을 그대로 표시했다. `docs/evidence/screenshots/admin-canary-metrics.png`에서 `CANARY · v1.2.0`, 실제 지표 카드·그래프와 출처 툴팁을 확인했다. 이후 다중 Replica에서 임의 Pod가 응답할 수 있는 경계를 없애기 위해 선택 방 `roomCode` 기반 lease-owner 라우팅이 추가됐다.
 - WebSocket RTT는 클라이언트와 서버의 서로 다른 시계에서 도착 시간을 빼지 않는다. 브라우저가 `client_ping` ACK까지 직접 잰 값을 `client_rtt`로 보고하며, 42.5ms 표본이 운영 P95에 그대로 반영되는 통합 테스트를 추가했다.
 - `game_snapshot_age_seconds`는 저장 순간마다 0으로 고정하지 않고 마지막 성공 Snapshot 시각부터의 실제 경과시간을 scrape 시 계산한다. Compose 실측에서 Canary 방은 `0.112초`, DR 방들은 `0.137~0.308초` 범위로 노출됐다.
-- `npm run load:compare`는 독립된 Delta/Full 서버와 10개 client worker를 사용해 50 Bot × 10Hz를 각각 5초 측정한다. 양쪽 모두 `2,500/2,500` 입력·거부 0이었고 Full/Delta는 대표 Payload `5.493배`, 서버 Payload P95 `5.301배`, Broadcast P95 `1.598배`, Event Loop P95 `1.573배`, CPU `4.355배`였다. 원본은 `docs/evidence/load-comparison-2026-07-16.json`에 저장했다.
+- `npm run load:compare`는 독립된 Delta/Full 서버와 10개 client worker를 사용해 50 Bot × 10Hz를 각각 5초 측정한다. 현재 revision 재측정에서 양쪽 모두 `2,500/2,500` 입력·거부 0이었고 Full/Delta는 대표 Payload `5.509배`, 서버 Payload P95 `5.319배`, Broadcast P95 `1.596배`, Tick P95 `1.167배`, Event Loop P95 `1.439배`, CPU `1.804배`였다. 원본은 `docs/evidence/load-comparison-2026-07-16.json`에 저장했다.
 - Helm/Kustomize에는 Nginx 시작을 막던 누락 `server-dr` DNS와 항상 해석 가능한 `server-canary` Service를 추가했다. 공개 Primary values는 관리자 인증을 유지하고 OOM 주입을 끄며, 인증 우회·실제 OOM은 외부 공개 경로가 없는 `values-isolated-chaos-demo.yaml`에만 분리했다.
 - GitHub Actions CI는 Node 24에서 typecheck/test/build, Playwright, 부하 비교, Compose config, Helm lint와 Kustomize render를 모든 push와 PR에서 실행한다.
 
@@ -92,6 +92,19 @@
 - E2E는 `390×844` 모바일 Canvas의 실제 bounding box가 정사각형인지, 관전 닉네임이 보이는지, FPS KPI가 `표본 대기`에서 실제 `fps` 값으로 전환되는지를 확인했다.
 - 현재 화면 증거는 `docs/evidence/screenshots/admin-client-render-metrics.png`, `join-mobile-square-fps.png`, `watch-player-nicknames.png`에 저장했다.
 - Helm ServiceMonitor는 Stable Service와 Canary Service를 별도 selector로 수집한다. Canary 비활성 시 하나, 활성 시 두 ServiceMonitor가 렌더되는 것을 확인했다.
+
+## 2026-07-16 관리자 운영 UX·Room owner 라우팅 재검증
+
+- 현재 관리자 탭 명칭과 책임은 `전체 게임 진행`(캔버스·참가자·경기 제어), `봇·부하 제어`(실제 WebSocket Bot·OOM·Demo/Chaos), `운영 지표`(KPI·상태 미터·최대 120초 그래프·인프라 관측)다.
+- 운영 지표의 `?` 도움말은 hover뿐 아니라 키보드 focus에서도 열리며 정의, 단위, `/api/config`·`/api/ops`·Node.js 런타임·Kubernetes API 등의 출처, 갱신 주기, `실제 관측값`·`설정값`·`식별 정보`·`데모 시뮬레이션` 구분을 보여주도록 변경됐다.
+- 선택 방의 운영 Snapshot은 `releaseChannel`과 `roomCode`를 함께 사용한다. Redis Room command bus가 현재 lease owner로 `/api/ops` 요청을 전달하며, Demo/Chaos payload의 `roomCode`도 같은 owner로 전달한다. 응답의 `DemoChaosStatus.scope`는 `room-owner-process`, 방 코드와 Pod 이름을 기록한다.
+- Tick 지연과 Full Broadcast는 선택 Room에만 한정된 가상 상태가 아니라 해당 lease owner game-api 프로세스의 실제 런타임 override다. 따라서 같은 프로세스가 담당하는 다른 Room에도 영향을 줄 수 있다. Primary 장애와 Failover는 계속 타임라인 전용 시뮬레이션이다.
+- Bot 조향은 최신 공유 Snapshot/Delta를 사용해 24방향에서 중립·상대 팀 영역을 우선한다. 관리자 팀 재배정 뒤에는 join 당시 팀 캐시가 아니라 최신 player Snapshot의 팀을 사용한다.
+- `ALLOW_DEMO_SERVER_SHUTDOWN`은 Kustomize와 Helm 기본값에서 `false`다. 외부 공개 경로가 없는 격리 환경에서만 Helm `values-isolated-chaos-demo.yaml` 또는 `scripts/deploy-kind.ps1 -AllowServerShutdown`으로 명시적으로 활성화한다. 일반 관리자 인증 우회 여부와 관계없이 모든 Demo/Chaos endpoint는 항상 `ADMIN_TOKEN` Bearer 인증을 요구한다.
+- `npm run typecheck`, `npm run build`가 전체 workspace에서 통과했다. Web Vitest는 `29/29`, 임시 Redis를 연결한 game-api Vitest는 실제 2-Replica owner-routing 통합 경로를 포함해 `34/34`가 통과했다.
+- `npm run test:e2e`가 Chromium에서 통과했다. 세 탭 노출과 키보드 이동, 선택 방 `ROOM OWNER`·Pod 표시, 실제 지연 제어 활성, 기본 서버 종료 차단, 운영 지표 도움말의 단위·출처·갱신·값 구분, 모바일 정사각 Canvas, 닉네임 관전, 재접속 Session 복구를 검증했다.
+- 새 화면 증거는 `docs/evidence/screenshots/admin-live-game-overview.png`, `admin-bot-load-controls.png`, `admin-operations-metrics-help.png`, `join-mobile-square-fps.png`, `watch-player-nicknames.png`에 저장하고 직접 렌더를 확인했다.
+- Helm은 lint와 default·Primary·DR·Canary·Bot·격리 Chaos·Secret 생성 variant 렌더를 통과했다. Kustomize는 `kubectl apply --dry-run=client`를 통과했고, 기본 서버 종료 `false`, 격리 values의 명시적 `true`, Secret 참조, read-only root filesystem을 렌더 결과에서 확인했다. Docker Compose 기본·observability·load profile과 PowerShell 배포 스크립트 parser도 통과했다.
 
 ## 아직 외부 환경 증거가 필요한 항목
 

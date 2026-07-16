@@ -7,12 +7,28 @@ import { Server as SocketServer, type Socket } from "socket.io";
 import {
   TEAM_IDS,
   clientRenderStatsPayloadSchema,
+  demoChaosFailoverPayloadSchema,
+  demoChaosFullBroadcastPayloadSchema,
+  demoChaosLagPayloadSchema,
+  demoChaosPrimaryFailurePayloadSchema,
+  demoChaosResetPayloadSchema,
+  demoChaosServerShutdownPayloadSchema,
   inputPayloadSchema,
   joinPayloadSchema,
   opsEventSchema,
   type BroadcastMode,
   type ClientRenderStatsPayload,
   type ClusterName,
+  type DemoChaosAction,
+  type DemoChaosActionResponse,
+  type DemoChaosFailoverPayload,
+  type DemoChaosFullBroadcastPayload,
+  type DemoChaosLagPayload,
+  type DemoChaosPrimaryFailurePayload,
+  type DemoChaosResetPayload,
+  type DemoChaosServerShutdownPayload,
+  type DemoChaosStatus,
+  type DemoFailoverTarget,
   type EventLogEntry,
   type GameConfig,
   type InputPayload,
@@ -39,7 +55,14 @@ import { MemoryRoomStore, summarizeRoom } from "./store.js";
 interface SocketData {
   role?: "controller" | "watcher" | "ops" | "admin";
   roomCode?: string;
+  opsRoomCode?: string;
   sessionId?: string;
+}
+
+export interface DemoServerShutdownRequest {
+  requestedAt: string;
+  reason: string;
+  server: ServerIdentity;
 }
 
 export interface GameServerOptions {
@@ -66,6 +89,7 @@ export interface GameServerOptions {
   memoryOomChunkBytes?: number;
   memoryOomIntervalMs?: number;
   clientRenderTelemetryTtlMs?: number;
+  onDemoServerShutdown?: (request: DemoServerShutdownRequest) => void | Promise<void>;
 }
 
 export interface RunningGameServer {
@@ -93,6 +117,24 @@ interface ClientRenderObservation {
   stats: ClientRenderStatsPayload;
 }
 
+type DemoChaosCommand =
+  | { action: "lag"; payload: DemoChaosLagPayload }
+  | { action: "full-broadcast"; payload: DemoChaosFullBroadcastPayload }
+  | { action: "server-shutdown"; payload: DemoChaosServerShutdownPayload }
+  | { action: "primary-failure"; payload: DemoChaosPrimaryFailurePayload }
+  | { action: "failover"; payload: DemoChaosFailoverPayload }
+  | { action: "reset"; payload: DemoChaosResetPayload };
+
+interface DemoChaosErrorResponse {
+  error: string;
+  code?: string;
+}
+
+interface DemoChaosExecutionResponse {
+  statusCode: number;
+  body: DemoChaosActionResponse | DemoChaosErrorResponse;
+}
+
 type RoomClusterCommand =
   | { kind: "snapshot"; roomCode: string }
   | { kind: "join"; roomCode: string; sessionId: string; socketId: string; nickname?: string; isBot: boolean }
@@ -102,7 +144,9 @@ type RoomClusterCommand =
   | { kind: "update"; roomCode: string; patch: Parameters<GameRoom["updateConfig"]>[0] }
   | { kind: "paint-boost"; roomCode: string; durationMs: number }
   | { kind: "announce"; roomCode: string; message: string }
-  | { kind: "bots"; roomCode: string; action: "add" | "remove"; count: number };
+  | { kind: "bots"; roomCode: string; action: "add" | "remove"; count: number }
+  | { kind: "ops"; roomCode: string }
+  | ({ kind: "chaos"; roomCode: string } & DemoChaosCommand);
 
 interface RoomClusterResponse {
   handled: boolean;
@@ -110,6 +154,8 @@ interface RoomClusterResponse {
   join?: JoinResult;
   input?: InputResult;
   sessionIds?: string[];
+  ops?: OpsSnapshot;
+  chaos?: DemoChaosExecutionResponse;
   error?: string;
 }
 
@@ -208,6 +254,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   let tickSchedulerActive = false;
   let nextTickAt = 0;
   let leaseMaintenanceRunning = false;
+  let opsBroadcastRunning = false;
 
   const events: EventLogEntry[] = [];
   const stats: RuntimeStats = {
@@ -229,14 +276,31 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   let lastCpuUsage = process.cpuUsage();
   let lastCpuSampleAt = Date.now();
   const runtimeMode = {
-    latencyMs: configuredTickDelayMs,
-    forceFullBroadcast: configuredBroadcastMode === "full",
+    tickDelayOverrideMs: null as number | null,
+    fullBroadcastOverride: null as boolean | null,
     activeCluster: options.clusterName ?? (
       process.env.CLUSTER_NAME === "dr" || process.env.CLUSTER_NAME === "cluster-1" || process.env.CLUSTER_NAME === "cluster-2"
         ? process.env.CLUSTER_NAME
         : "primary"
     ),
   };
+  let runtimeControlUpdatedAt: string | null = null;
+  let primaryFailureSimulation: DemoChaosStatus["simulations"]["primaryFailure"] = {
+    active: false,
+    label: "SIMULATION",
+    source: "timeline-only",
+    requestedAt: null,
+    reason: null,
+  };
+  let failoverSimulation: DemoChaosStatus["simulations"]["failover"] = {
+    active: false,
+    label: "SIMULATION",
+    source: "timeline-only",
+    requestedAt: null,
+    targetCluster: null,
+  };
+  let serverShutdownRequestedAt: string | null = null;
+  const demoServerShutdownAllowed = process.env.ALLOW_DEMO_SERVER_SHUTDOWN === "true";
 
   let tickTimer: NodeJS.Timeout | null = null;
   let opsTimer: NodeJS.Timeout | null = null;
@@ -263,13 +327,19 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const announcementTimers = new Map<string, NodeJS.Timeout>();
   const pendingEventWrites = new Map<string, Promise<boolean>>();
 
+  const effectiveTickDelayMs = (): number => runtimeMode.tickDelayOverrideMs ?? configuredTickDelayMs;
+  const effectiveBaseBroadcastMode = (): BroadcastMode => {
+    if (runtimeMode.fullBroadcastOverride !== null) return runtimeMode.fullBroadcastOverride ? "full" : "delta";
+    return configuredBroadcastMode;
+  };
+
   const baseIdentity = (): ServerIdentity => ({
     version: stableVersion,
     gitSha: options.gitSha ?? process.env.GIT_SHA ?? "local",
     podName: options.podName ?? process.env.POD_NAME ?? "local-process",
     cluster: runtimeMode.activeCluster,
     releaseChannel: processReleaseChannel,
-    broadcastMode: runtimeMode.forceFullBroadcast ? "full" : configuredBroadcastMode,
+    broadcastMode: effectiveBaseBroadcastMode(),
   });
 
   const roomSocketPath = (releaseChannel: "stable" | "canary"): string => {
@@ -281,8 +351,48 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     ...baseIdentity(),
     version: room.releaseChannel === "canary" ? canaryVersion : stableVersion,
     releaseChannel: room.releaseChannel,
-    broadcastMode: runtimeMode.forceFullBroadcast || room.releaseChannel === "canary" ? "full" : configuredBroadcastMode,
+    broadcastMode: runtimeMode.fullBroadcastOverride !== null
+      ? (runtimeMode.fullBroadcastOverride ? "full" : "delta")
+      : (room.releaseChannel === "canary" ? "full" : configuredBroadcastMode),
   });
+
+  const getDemoChaosStatus = (
+    observedAt = new Date().toISOString(),
+    ownerRoomCode: string | null = null,
+  ): DemoChaosStatus => {
+    const effectiveBroadcastMode = effectiveBaseBroadcastMode();
+    return {
+      observedAt,
+      source: "game-api-runtime",
+      scope: {
+        kind: ownerRoomCode ? "room-owner-process" : "process",
+        roomCode: ownerRoomCode,
+        podName: baseIdentity().podName,
+      },
+      runtime: {
+        tickDelayMs: effectiveTickDelayMs(),
+        fullBroadcastEnabled: effectiveBroadcastMode === "full",
+        effectiveBroadcastMode,
+        configuredTickDelayMs,
+        configuredBroadcastMode,
+        overrideActive: runtimeMode.tickDelayOverrideMs !== null || runtimeMode.fullBroadcastOverride !== null,
+        source: runtimeMode.tickDelayOverrideMs !== null || runtimeMode.fullBroadcastOverride !== null
+          ? "admin-api"
+          : "environment",
+        updatedAt: runtimeControlUpdatedAt,
+      },
+      simulations: {
+        primaryFailure: { ...primaryFailureSimulation },
+        failover: { ...failoverSimulation },
+      },
+      serverShutdown: {
+        allowed: demoServerShutdownAllowed,
+        handlerAvailable: typeof options.onDemoServerShutdown === "function",
+        requestedAt: serverShutdownRequestedAt,
+        source: "environment-gated",
+      },
+    };
+  };
 
   const addEvent = (
     type: string,
@@ -456,7 +566,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     };
   };
 
-  const getOpsSnapshot = async (): Promise<OpsSnapshot> => {
+  const getOpsSnapshot = async (ownerRoomCode: string | null = null): Promise<OpsSnapshot> => {
     await syncSharedEvents();
     const now = Date.now();
     const cpuUsage = process.cpuUsage();
@@ -512,6 +622,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       rooms: summaries,
       infrastructure,
       faultInjection: { ...memoryOomFault },
+      demoChaos: getDemoChaosStatus(new Date(now).toISOString(), ownerRoomCode),
       recentEvents: events.slice(0, 60),
     };
   };
@@ -550,6 +661,9 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const requireAdmin = demoAdminAuthDisabled
     ? (_request: Request, _response: Response, next: NextFunction) => next()
     : requireToken(adminToken);
+  // Chaos controls remain token-protected even in the optional no-login demo
+  // mode because some controls can change live runtime behavior.
+  const requireChaosAdmin = requireToken(adminToken);
   const requireOpsEvent = requireToken(opsEventToken);
 
   const forwardCanaryRoomCreation = async (request: Request, response: Response): Promise<void> => {
@@ -581,10 +695,10 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }
   };
 
-  const forwardCanaryOps = async (response: Response): Promise<void> => {
+  const forwardCanaryOps = async (request: Request, response: Response): Promise<void> => {
     try {
-      const upstream = await fetch(`${canaryApiUrl}/api/ops`, {
-        signal: AbortSignal.timeout(3000),
+      const upstream = await fetch(`${canaryApiUrl}${request.originalUrl}`, {
+        signal: AbortSignal.timeout(10_000),
       });
       const rawBody = await upstream.text();
       let body: unknown;
@@ -600,6 +714,34 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         error: `Canary telemetry service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
       });
     }
+  };
+
+  const forwardCanaryChaosIfRequested = async (request: Request, response: Response): Promise<boolean> => {
+    if (request.query.releaseChannel !== "canary" || !canaryApiUrl || processReleaseChannel === "canary") {
+      return false;
+    }
+    try {
+      const upstream = await fetch(`${canaryApiUrl}${request.originalUrl}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-type": "application/json",
+          "x-forwarded-host": request.get("host") ?? "",
+          "x-forwarded-proto": request.protocol,
+        },
+        body: JSON.stringify(request.body ?? {}),
+        signal: AbortSignal.timeout(5_000),
+      });
+      const rawBody = await upstream.text();
+      const contentType = upstream.headers.get("content-type");
+      if (contentType) response.setHeader("Content-Type", contentType);
+      response.status(upstream.status).send(rawBody);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary chaos service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+    return true;
   };
 
   const saveRoomSnapshot = async (room: GameRoom): Promise<void> => {
@@ -699,11 +841,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     if (tickRunning) return;
     tickRunning = true;
     try {
-      if (runtimeMode.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, runtimeMode.latencyMs));
+      const tickDelayMs = effectiveTickDelayMs();
+      if (tickDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, tickDelayMs));
       for (const room of roomStore.list()) {
         const started = performance.now();
         const changed = room.tick();
-        const elapsed = performance.now() - started + runtimeMode.latencyMs;
+        const elapsed = performance.now() - started + tickDelayMs;
         pushWindow(stats.tickDurationsMs, elapsed);
         setIdentity(room);
         const snapshot = room.snapshot();
@@ -737,6 +880,236 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     () => socketPath,
     (roomCode, sessionId) => { roomStore.get(roomCode)?.removeBot(sessionId); },
   );
+
+  const chaosActionResponse = (
+    action: DemoChaosAction,
+    ownerRoomCode: string | null,
+  ): DemoChaosActionResponse => ({
+    ok: true,
+    action,
+    status: getDemoChaosStatus(new Date().toISOString(), ownerRoomCode),
+  });
+
+  const executeLocalChaosAction = async (
+    command: DemoChaosCommand,
+    ownerRoomCode: string | null,
+  ): Promise<DemoChaosExecutionResponse> => {
+    const eventRoomCode = ownerRoomCode;
+    const effectScope = ownerRoomCode ? "room-owner-process" : "process";
+
+    if (command.action === "lag") {
+      const updatedAt = new Date().toISOString();
+      runtimeMode.tickDelayOverrideMs = command.payload.delayMs;
+      runtimeControlUpdatedAt = updatedAt;
+      addEvent(
+        "chaos.tick-delay.updated",
+        `Actual runtime tick delay set to ${command.payload.delayMs}ms`,
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          delayMs: command.payload.delayMs,
+          configuredDelayMs: configuredTickDelayMs,
+          source: "admin-api",
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "full-broadcast") {
+      const updatedAt = new Date().toISOString();
+      runtimeMode.fullBroadcastOverride = command.payload.enabled;
+      runtimeControlUpdatedAt = updatedAt;
+      for (const room of roomStore.list()) broadcastSnapshot(room);
+      addEvent(
+        "chaos.full-broadcast.updated",
+        `Actual runtime broadcast mode set to ${command.payload.enabled ? "full" : "delta"}`,
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          enabled: command.payload.enabled,
+          configuredMode: configuredBroadcastMode,
+          source: "admin-api",
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "server-shutdown") {
+      if (!demoServerShutdownAllowed) {
+        addEvent(
+          "chaos.server-shutdown.blocked",
+          "Demo server shutdown request blocked because the explicit environment gate is disabled",
+          "chaos",
+          eventRoomCode,
+          { effect: "blocked", effectScope, source: "environment-gate" },
+        );
+        return {
+          statusCode: 409,
+          body: {
+            error: "Demo server shutdown is disabled. Set ALLOW_DEMO_SERVER_SHUTDOWN=true explicitly.",
+            code: "DEMO_SERVER_SHUTDOWN_DISABLED",
+          },
+        };
+      }
+      const shutdownHandler = options.onDemoServerShutdown;
+      if (!shutdownHandler) {
+        addEvent(
+          "chaos.server-shutdown.blocked",
+          "Demo server shutdown request blocked because no shutdown handler is installed",
+          "chaos",
+          eventRoomCode,
+          { effect: "blocked", effectScope, source: "missing-handler" },
+        );
+        return {
+          statusCode: 409,
+          body: {
+            error: "Demo server shutdown handler is unavailable.",
+            code: "DEMO_SERVER_SHUTDOWN_HANDLER_UNAVAILABLE",
+          },
+        };
+      }
+      const requestedAt = new Date().toISOString();
+      const reason = command.payload.reason ?? "Requested from Demo / Chaos Controls";
+      serverShutdownRequestedAt = requestedAt;
+      const shutdownRequest: DemoServerShutdownRequest = {
+        requestedAt,
+        reason,
+        server: baseIdentity(),
+      };
+      addEvent(
+        "chaos.server-shutdown.requested",
+        "Actual game server shutdown accepted by the environment-gated handler",
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          source: "admin-api",
+          reason,
+          podName: shutdownRequest.server.podName,
+        },
+      );
+      // A room-targeted request may have arrived over Redis RPC. Give the
+      // coordinator enough time to publish the accepted response before the
+      // injected handler starts graceful process shutdown.
+      setTimeout(() => {
+        void Promise.resolve(shutdownHandler(shutdownRequest)).catch((error: unknown) => {
+          addEvent(
+            "chaos.server-shutdown.failed",
+            error instanceof Error ? error.message : "Demo server shutdown handler failed",
+            "chaos",
+            eventRoomCode,
+            { effect: "actual-runtime", effectScope, source: "shutdown-handler" },
+          );
+        });
+      }, ownerRoomCode ? 100 : 0);
+      return { statusCode: 202, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "primary-failure") {
+      const requestedAt = new Date().toISOString();
+      const reason = command.payload.reason ?? "Primary failure demo marker requested";
+      primaryFailureSimulation = {
+        active: true,
+        label: "SIMULATION",
+        source: "timeline-only",
+        requestedAt,
+        reason,
+      };
+      addEvent(
+        "PRIMARY_UNHEALTHY",
+        `[SIMULATION] Primary failure timeline marker only; actual cluster remains ${baseIdentity().cluster}`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster: baseIdentity().cluster,
+          reason,
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "failover") {
+      const requestedAt = new Date().toISOString();
+      const targetCluster: DemoFailoverTarget = command.payload.targetCluster ?? "dr";
+      failoverSimulation = {
+        active: true,
+        label: "SIMULATION",
+        source: "timeline-only",
+        requestedAt,
+        targetCluster,
+      };
+      const actualCluster = baseIdentity().cluster;
+      addEvent(
+        "FAILOVER_STARTED",
+        `[SIMULATION] Failover timeline started toward ${targetCluster}; no traffic or room authority changed`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster,
+          targetCluster,
+        },
+      );
+      addEvent(
+        "FAILOVER_COMPLETED",
+        `[SIMULATION] Failover timeline completed; actual cluster remains ${actualCluster}`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster,
+          targetCluster,
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    runtimeMode.tickDelayOverrideMs = null;
+    runtimeMode.fullBroadcastOverride = null;
+    runtimeControlUpdatedAt = null;
+    primaryFailureSimulation = {
+      active: false,
+      label: "SIMULATION",
+      source: "timeline-only",
+      requestedAt: null,
+      reason: null,
+    };
+    failoverSimulation = {
+      active: false,
+      label: "SIMULATION",
+      source: "timeline-only",
+      requestedAt: null,
+      targetCluster: null,
+    };
+    serverShutdownRequestedAt = null;
+    for (const room of roomStore.list()) broadcastSnapshot(room);
+    addEvent(
+      "chaos.reset",
+      "Runtime chaos overrides returned to configured values and simulation markers were cleared",
+      "chaos",
+      eventRoomCode,
+      {
+        effect: "actual-runtime-and-simulation-state",
+        effectScope,
+        configuredDelayMs: configuredTickDelayMs,
+        configuredMode: configuredBroadcastMode,
+        source: "admin-api",
+      },
+    );
+    return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+  };
 
   const roomAction = (room: GameRoom, action: string): RoomSnapshot => {
     if (action === "start") return room.start();
@@ -809,6 +1182,15 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         }
         return { handled: true, snapshot: room.snapshot() };
       }
+      if (command.kind === "ops") {
+        return { handled: true, ops: await getOpsSnapshot(room.roomCode) };
+      }
+      if (command.kind === "chaos") {
+        return {
+          handled: true,
+          chaos: await executeLocalChaosAction(command, room.roomCode),
+        };
+      }
 
       const sessionIds = command.action === "add"
         ? botManager.add(room.roomCode, command.count)
@@ -830,7 +1212,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   const dispatchRoomCommand = async (command: RoomClusterCommand): Promise<RoomClusterResponse> => {
     if (!roomCoordinator) return executeLocalRoomCommand(command);
-    return await roomCoordinator.request(command.roomCode, command) ?? { handled: false };
+    const timeoutMs = command.kind === "ops" ? 8_000 : 800;
+    return await roomCoordinator.request(command.roomCode, command, timeoutMs) ?? { handled: false };
   };
 
   const clusterRoomSummaries = async () => {
@@ -846,6 +1229,37 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       const persisted = byCode.get(roomCode);
       return persisted ? summarizeRoom(GameRoom.restore(persisted).snapshot()) : null;
     }))).filter((summary): summary is NonNullable<typeof summary> => summary !== null);
+  };
+
+  const getRoomOwnerOpsSnapshot = async (roomCode: string): Promise<OpsSnapshot | null> => {
+    const result = await dispatchRoomCommand({ kind: "ops", roomCode });
+    return result.handled ? result.ops ?? null : null;
+  };
+
+  const broadcastOpsSnapshots = async (): Promise<void> => {
+    if (opsBroadcastRunning) return;
+    opsBroadcastRunning = true;
+    try {
+      const sockets = await io.local.in("ops").fetchSockets();
+      const snapshots = new Map<string, Promise<OpsSnapshot | null>>();
+      for (const socket of sockets) {
+        const targetRoomCode = (socket.data as SocketData).opsRoomCode ?? null;
+        const key = targetRoomCode ?? "__process__";
+        let snapshotPromise = snapshots.get(key);
+        if (!snapshotPromise) {
+          snapshotPromise = targetRoomCode
+            ? getRoomOwnerOpsSnapshot(targetRoomCode)
+            : getOpsSnapshot().then((snapshot) => snapshot);
+          snapshots.set(key, snapshotPromise);
+        }
+        const snapshot = await snapshotPromise.catch(() => null);
+        // Never replace a room-owner view with metrics from the arbitrary
+        // gateway Pod when its owner is temporarily unavailable.
+        if (snapshot) socket.emit("ops.snapshot", snapshot);
+      }
+    } finally {
+      opsBroadcastRunning = false;
+    }
   };
 
   app.set("trust proxy", true);
@@ -1041,13 +1455,111 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json({ action, count: sessionIds.length, sessionIds });
   });
 
+  const rejectInvalidChaosPayload = (response: Response, details: unknown): void => {
+    response.status(400).json({ error: "Invalid chaos payload", details });
+  };
+
+  const sendRoomRoutingFailure = async (
+    roomCode: string,
+    response: Response,
+    operation: string,
+  ): Promise<void> => {
+    const persisted = await storage.load(roomCode);
+    if (persisted) {
+      response.status(503).json({
+        error: `${operation} could not reach the current room owner`,
+        code: "ROOM_OWNER_UNAVAILABLE",
+        roomCode,
+      });
+      return;
+    }
+    response.status(404).json({ error: "Room not found", code: "ROOM_NOT_FOUND", roomCode });
+  };
+
+  const dispatchChaosRequest = async (
+    command: DemoChaosCommand,
+    response: Response,
+  ): Promise<void> => {
+    const ownerRoomCode = command.payload.roomCode?.trim().toUpperCase() ?? null;
+    const result = ownerRoomCode
+      ? await dispatchRoomCommand({ kind: "chaos", roomCode: ownerRoomCode, ...command })
+      : { handled: true, chaos: await executeLocalChaosAction(command, null) };
+    if (!result.handled || !result.chaos) {
+      if (ownerRoomCode) {
+        await sendRoomRoutingFailure(ownerRoomCode, response, "Chaos action");
+      } else {
+        response.status(503).json({ error: "Chaos action failed", code: "CHAOS_ACTION_FAILED" });
+      }
+      return;
+    }
+    response.status(result.chaos.statusCode).json(result.chaos.body);
+  };
+
+  app.post("/api/admin/chaos/lag", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosLagPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "lag", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/full-broadcast", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosFullBroadcastPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "full-broadcast", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/server-shutdown", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosServerShutdownPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "server-shutdown", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/primary-failure", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosPrimaryFailurePayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "primary-failure", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/failover", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosFailoverPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "failover", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/reset", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosResetPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "reset", payload: parsed.data }, response);
+  });
+
   app.get("/api/ops", async (request, response) => {
     const requestedChannel = request.query.releaseChannel === "canary" ? "canary" : "stable";
     if (requestedChannel === "canary" && canaryApiUrl && processReleaseChannel !== "canary") {
-      await forwardCanaryOps(response);
+      await forwardCanaryOps(request, response);
       return;
     }
-    response.json(await getOpsSnapshot());
+    const requestedRoomCode = request.query.roomCode;
+    if (requestedRoomCode === undefined) {
+      response.json(await getOpsSnapshot());
+      return;
+    }
+    const parsedRoomTarget = demoChaosResetPayloadSchema.safeParse({ roomCode: requestedRoomCode });
+    if (!parsedRoomTarget.success || !parsedRoomTarget.data.roomCode) {
+      response.status(400).json({ error: "Invalid roomCode query" });
+      return;
+    }
+    const roomCode = parsedRoomTarget.data.roomCode.toUpperCase();
+    const result = await dispatchRoomCommand({ kind: "ops", roomCode });
+    if (!result.handled || !result.ops) {
+      await sendRoomRoutingFailure(roomCode, response, "Ops snapshot");
+      return;
+    }
+    response.json(result.ops);
   });
   app.get("/api/ops/events", async (_request, response) => {
     await syncSharedEvents();
@@ -1181,13 +1693,39 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   io.on("connection", (socket) => {
     socket.on("spectator_subscribe", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
     socket.on("room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
-    socket.on("ops.watch", async (acknowledge?: (snapshot: OpsSnapshot) => void) => {
+    socket.on("ops.watch", async (
+      payloadOrAcknowledge?: { roomCode?: string } | ((snapshot: OpsSnapshot) => void),
+      maybeAcknowledge?: (snapshot: OpsSnapshot) => void,
+    ) => {
       const data = socket.data as SocketData;
+      const acknowledge = typeof payloadOrAcknowledge === "function"
+        ? payloadOrAcknowledge
+        : maybeAcknowledge;
+      const requestedRoomCode = typeof payloadOrAcknowledge === "object"
+        ? payloadOrAcknowledge.roomCode
+        : data.opsRoomCode;
       if (data.role !== "admin") {
         data.role = "ops";
         clientRenderObservations.delete(socket.id);
       }
       void socket.join("ops");
+      if (requestedRoomCode) {
+        const parsedTarget = demoChaosResetPayloadSchema.safeParse({ roomCode: requestedRoomCode });
+        if (!parsedTarget.success || !parsedTarget.data.roomCode) {
+          socket.emit("ops.error", { error: "Invalid roomCode", code: "INVALID_ROOM_CODE" });
+          return;
+        }
+        const roomCode = parsedTarget.data.roomCode.toUpperCase();
+        const snapshot = await getRoomOwnerOpsSnapshot(roomCode);
+        if (!snapshot) {
+          socket.emit("ops.error", { error: "Room owner unavailable", code: "ROOM_OWNER_UNAVAILABLE", roomCode });
+          return;
+        }
+        data.opsRoomCode = roomCode;
+        acknowledge?.(snapshot);
+        return;
+      }
+      delete data.opsRoomCode;
       acknowledge?.(await getOpsSnapshot());
     });
     socket.on("admin_subscribe", (payload: { token?: string }, acknowledge?: (result: { ok: boolean }) => void) => {
@@ -1200,11 +1738,23 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       acknowledge?.({ ok });
     });
     socket.on("admin.room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => {
-      if ((socket.data as SocketData).role !== "admin") {
+      const data = socket.data as SocketData;
+      if (data.role !== "admin") {
         acknowledge?.({ ok: false, error: "Unauthorized" });
         return;
       }
-      acknowledge?.(await joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase()));
+      const result = await joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase());
+      if (result.ok && result.snapshot) {
+        data.opsRoomCode = result.snapshot.roomCode;
+        void getRoomOwnerOpsSnapshot(result.snapshot.roomCode).then((snapshot) => {
+          if (snapshot && (socket.data as SocketData).opsRoomCode === result.snapshot?.roomCode) {
+            socket.emit("ops.snapshot", snapshot);
+          }
+        });
+      } else {
+        delete data.opsRoomCode;
+      }
+      acknowledge?.(result);
     });
     const join = async (rawPayload: unknown, acknowledge?: (result: JoinResult) => void) => {
       const parsed = joinPayloadSchema.safeParse(rawPayload);
@@ -1311,9 +1861,10 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     tickSchedulerActive = true;
     nextTickAt = performance.now() + DEFAULT_TICK_INTERVAL_MS;
     scheduleNextTick();
-    // Every gateway computes the same cluster room summary, but only its local
-    // admin sockets need that sample. Avoid N replicas broadcasting N copies.
-    opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.local.to("ops").emit("ops.snapshot", snapshot)), 1000);
+    // Each local watcher receives either this process snapshot or the snapshot
+    // from the current owner of its selected room. Grouping by room avoids one
+    // owner RPC per admin browser.
+    opsTimer = setInterval(() => void broadcastOpsSnapshots(), 1000);
     snapshotTimer = setInterval(() => void persistRooms().catch((error) => addEvent("snapshot.failed", error instanceof Error ? error.message : "Snapshot failed", "system")), snapshotIntervalMs);
     leaseTimer = setInterval(() => {
       void maintainLeasesAndRecover().catch((error) => addEvent(

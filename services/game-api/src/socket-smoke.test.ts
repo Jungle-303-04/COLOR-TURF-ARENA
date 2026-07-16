@@ -287,9 +287,6 @@ describe("two-client Socket.IO and protected operations flow", () => {
       error: "이 환경에서는 실제 OOMKilled 장애 주입이 비활성화되어 있습니다.",
     });
 
-    for (const removedPath of ["lag", "full-broadcast", "server-shutdown", "primary-failure", "failover", "reset"]) {
-      expect((await fetch(`${running.url}/api/admin/chaos/${removedPath}`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
-    }
     expect((await fetch(`${running.url}/api/demo-simulation`, { method: "POST", headers: auth, body: "{}" })).status).toBe(404);
 
     await new Promise((resolve) => setTimeout(resolve, 350));

@@ -21,6 +21,17 @@ server:
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: 2000m, memory: 512Mi }
+  # The game-server image creates app as UID 100 / GID 101.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 100
+    runAsGroup: 101
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
 
 canary:
   enabled: false
@@ -41,6 +52,19 @@ web:
   resources:
     requests: { cpu: 25m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
+  # nginx:alpine defines nginx as UID/GID 101. Writable runtime paths are
+  # supplied as emptyDir volumes by the Deployment.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
 
 gateway:
   dr:
@@ -52,6 +76,22 @@ gateway:
 redis:
   install: true
   image: redis:8.2-alpine
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  # redis:8.2-alpine defines redis as UID 999 / GID 1000.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
   persistence:
     enabled: false
     size: 1Gi
@@ -63,6 +103,17 @@ bot:
     tag: local
   room: ""
   count: 20
+  # node:alpine defines node as UID/GID 1000.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile: { type: RuntimeDefault }
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
 
 auth:
   create: false
@@ -77,6 +128,9 @@ chaos:
   # This is fail-closed because it intentionally makes one game-server
   # container exceed its cgroup memory limit. Enable only for the demo target.
   allowPodOom: false
+  # This permits the token-protected Demo / Chaos API to terminate the serving
+  # game-server process. Keep false outside an isolated, self-healing demo.
+  allowServerShutdown: false
   oomLeakChunkMiB: 4
   oomLeakIntervalMs: 250
 

@@ -1,6 +1,7 @@
 # DANGEROUS: use only in an isolated, disposable demo namespace with no public
 # ingress, tunnel, or untrusted network access. This file intentionally removes
-# admin authentication and permits a request that OOM-kills a game-server Pod.
+# admin authentication and permits requests that OOM-kill or gracefully stop a
+# game-server Pod. Kubernetes must be able to restart the terminated container.
 server:
   publicBaseUrl: ""
 
@@ -9,6 +10,7 @@ auth:
 
 chaos:
   allowPodOom: true
+  allowServerShutdown: true
 
 service:
   type: ClusterIP

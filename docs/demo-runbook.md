@@ -8,6 +8,7 @@
 
 - PC와 휴대폰을 같은 네트워크에 연결한다.
 - `/admin`을 열고 `ADMIN_TOKEN`으로 로그인한다.
+- 관리자 탭이 `전체 게임 진행`, `봇·부하 제어`, `운영 지표`로 분리되어 있는지 확인한다.
 - `/ops`와 Prometheus를 별도 탭에 연다.
 - `docker compose ps`에서 `server-stable`, `server-dr`, `frontend`, `redis`가 Healthy인지 확인한다.
 - 실물 네트워크가 불안하면 관리자 Bot 10~20개를 준비한다.
@@ -16,10 +17,10 @@
 ## 0:00–1:00 — 정상 Stable 경기
 
 1. `Stable v1.1.3 · Delta` Arena를 만든다.
-2. `＋5 BOTS`를 두 번 실행한다.
+2. `봇·부하 제어`에서 `＋ 봇 5개`를 두 번 실행한다.
 3. 관객이 QR로 닉네임을 입력해 참가한다.
 4. `/watch/:roomCode`를 Fullscreen으로 연다.
-5. Start 후 `PRIMARY · STABLE · DELTA`와 낮은 Payload/Tick p95를 보여준다.
+5. `전체 게임 진행`에서 경기를 시작한 뒤 `PRIMARY · STABLE · DELTA`와 낮은 Payload/Tick p95를 보여준다.
 
 말할 내용: “휴대폰은 방향만 보내고 위치·속도·Paint·점수는 30Hz 서버가 판정합니다. 화면은 기기 주사율로 부드럽게 그립니다.”
 
@@ -39,12 +40,13 @@
    ```
 
 2. Canary Arena를 만들어 `v1.2.0 · FULL`을 보여준다.
-3. 관리자 `게임·봇 제어` 탭에서 실제 WebSocket Bot을 50개부터 추가하고 경기를 시작한다.
+3. 관리자 `봇·부하 제어` 탭에서 실제 WebSocket Bot을 50개부터 추가하고 경기를 시작한다.
 4. `/ops`와 관리자 `운영 지표` 탭에서 Tick p95, Event Loop p95, CPU, Broadcast와 Payload 증가를 비교한다.
-5. 플레이·관전 브라우저가 열린 상태에서 `게임 화면 FPS P10` 하락과 `프레임 누락 P95` 상승을 함께 보여준다. 이 두 값은 서버 Tick을 환산한 값이 아니라 브라우저 `requestAnimationFrame` 실측이다.
-6. 관전 화면의 작은 `DEGRADED` 표시를 확인한다.
+5. 지표 이름 옆 `?`에 포인터를 올리거나 키보드 포커스를 보내 정의, 단위, 수집 출처, 갱신 주기와 실제 관측값/설정값/식별 정보 구분을 보여준다.
+6. 플레이·관전 브라우저가 열린 상태에서 `게임 화면 FPS P10` 하락과 `프레임 누락 P95` 상승을 함께 보여준다. 이 두 값은 서버 Tick을 환산한 값이 아니라 브라우저 `requestAnimationFrame` 실측이다.
+7. 관전 화면의 작은 `DEGRADED` 표시를 확인한다.
 
-이 단계의 수치는 가짜 상태가 아니다. `/socket/canary`로 분리된 Canary authority의 전체 Grid 직렬화와 실제 Bot 입력이 만든 런타임 측정값이다. 별도 Canary Pod를 배포한 환경에서는 `server-canary` Service의 `/metrics`도 함께 비교한다.
+이 단계의 수치는 가짜 상태가 아니다. 선택한 방의 `roomCode`와 release channel을 사용해 Redis Room command bus가 현재 lease owner의 `/api/ops` 결과를 가져오며, `/socket/canary`로 분리된 Canary authority의 전체 Grid 직렬화와 실제 Bot 입력이 만든 런타임 측정값이다. 별도 Canary Pod를 배포한 환경에서는 `server-canary` Service의 `/metrics`도 함께 비교한다.
 
 ## 2:40–3:20 — Rollback
 
@@ -84,6 +86,8 @@
 - 브라우저 화면 FPS P10과 프레임 누락 P95
 
 실제 Kubernetes를 사용한다면 이 구간에서만 관리자 `실제 OOMKilled 시작`을 선택적으로 사용한다. Helm의 `chaos.allowPodOom=true`가 명시된 격리된 데모 namespace에서 실행하고, 완료 판정은 화면 문구가 아니라 Pod의 `lastState.terminated.reason=OOMKilled`, restart count 증가, Ready 복귀로 한다. 로컬 Compose에서는 이 버튼이 의도적으로 비활성화된다.
+
+`실제 서버 종료 요청`은 별도의 위험 기능이다. `ALLOW_DEMO_SERVER_SHUTDOWN=false`가 기본이며, 외부 공개 경로가 없는 격리 데모에서 Helm `values-isolated-chaos-demo.yaml` 또는 kind 배포의 `-AllowServerShutdown`으로 명시적으로 켠 경우에만 사용할 수 있다. 허용 여부와 무관하게 요청에는 항상 `ADMIN_TOKEN` Bearer 인증이 필요하다. 선택 방으로 보낸 Tick 지연·Full Broadcast·서버 종료는 해당 방의 lease owner 프로세스에서 실행되며, 프로세스 단위 효과라는 점을 설명한다.
 
 ## 비상 복구
 

@@ -176,6 +176,64 @@ export interface MemoryOomFaultStatus {
   message: string;
 }
 
+export type DemoChaosAction =
+  | "lag"
+  | "full-broadcast"
+  | "server-shutdown"
+  | "primary-failure"
+  | "failover"
+  | "reset";
+
+export type DemoFailoverTarget = Exclude<ClusterName, "primary">;
+
+export interface DemoChaosStatus {
+  observedAt: string;
+  source: "game-api-runtime";
+  scope: {
+    kind: "process" | "room-owner-process";
+    roomCode: string | null;
+    podName: string;
+  };
+  runtime: {
+    tickDelayMs: number;
+    fullBroadcastEnabled: boolean;
+    effectiveBroadcastMode: BroadcastMode;
+    configuredTickDelayMs: number;
+    configuredBroadcastMode: BroadcastMode;
+    overrideActive: boolean;
+    source: "environment" | "admin-api";
+    updatedAt: string | null;
+  };
+  simulations: {
+    primaryFailure: {
+      active: boolean;
+      label: "SIMULATION";
+      source: "timeline-only";
+      requestedAt: string | null;
+      reason: string | null;
+    };
+    failover: {
+      active: boolean;
+      label: "SIMULATION";
+      source: "timeline-only";
+      requestedAt: string | null;
+      targetCluster: DemoFailoverTarget | null;
+    };
+  };
+  serverShutdown: {
+    allowed: boolean;
+    handlerAvailable: boolean;
+    requestedAt: string | null;
+    source: "environment-gated";
+  };
+}
+
+export interface DemoChaosActionResponse {
+  ok: true;
+  action: DemoChaosAction;
+  status: DemoChaosStatus;
+}
+
 export interface RuntimeMetricSummary {
   tickMeanMs: number;
   tickP95Ms: number;
@@ -215,6 +273,7 @@ export interface OpsSnapshot {
   rooms: RoomSummary[];
   infrastructure: InfrastructureObservation;
   faultInjection: MemoryOomFaultStatus;
+  demoChaos: DemoChaosStatus;
   recentEvents: EventLogEntry[];
 }
 
@@ -251,6 +310,50 @@ export const clientRenderStatsPayloadSchema = z.object({
 }).strict();
 
 export type ClientRenderStatsPayload = z.infer<typeof clientRenderStatsPayloadSchema>;
+
+const demoChaosReasonSchema = z.string().trim().min(1).max(160);
+const demoChaosRoomCodeSchema = z.string().trim().min(3).max(16).optional();
+
+export const demoChaosLagPayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+  delayMs: z.number().int().min(0).max(5_000),
+}).strict();
+
+export type DemoChaosLagPayload = z.infer<typeof demoChaosLagPayloadSchema>;
+
+export const demoChaosFullBroadcastPayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+  enabled: z.boolean(),
+}).strict();
+
+export type DemoChaosFullBroadcastPayload = z.infer<typeof demoChaosFullBroadcastPayloadSchema>;
+
+export const demoChaosServerShutdownPayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+  reason: demoChaosReasonSchema.optional(),
+}).strict();
+
+export type DemoChaosServerShutdownPayload = z.infer<typeof demoChaosServerShutdownPayloadSchema>;
+
+export const demoChaosPrimaryFailurePayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+  reason: demoChaosReasonSchema.optional(),
+}).strict();
+
+export type DemoChaosPrimaryFailurePayload = z.infer<typeof demoChaosPrimaryFailurePayloadSchema>;
+
+export const demoChaosFailoverPayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+  targetCluster: z.enum(["dr", "cluster-1", "cluster-2"]).optional(),
+}).strict();
+
+export type DemoChaosFailoverPayload = z.infer<typeof demoChaosFailoverPayloadSchema>;
+
+export const demoChaosResetPayloadSchema = z.object({
+  roomCode: demoChaosRoomCodeSchema,
+}).strict();
+
+export type DemoChaosResetPayload = z.infer<typeof demoChaosResetPayloadSchema>;
 
 export const opsEventTypes = [
   "DEPLOYMENT_STARTED",

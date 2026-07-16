@@ -22,6 +22,9 @@ spec:
         color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
     spec:
       priorityClassName: {{ .Values.priorityClass.name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.web.podSecurityContext | nindent 8 }}
       containers:
         - name: web
           image: {{ include "color-turf.webImage" . | quote }}
@@ -37,3 +40,13 @@ spec:
             failureThreshold: 1
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.web.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - { name: nginx-cache, mountPath: /var/cache/nginx }
+            - { name: nginx-run, mountPath: /run }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: nginx-cache, emptyDir: {} }
+        - { name: nginx-run, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }

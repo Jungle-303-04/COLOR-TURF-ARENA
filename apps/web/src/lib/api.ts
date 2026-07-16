@@ -1,4 +1,13 @@
-import type { OpsSnapshot, PublicConfig, RoomSnapshot, RoomSummary, SystemStatus } from "@paint-arena/shared";
+import type {
+  ClusterName,
+  DemoChaosActionResponse,
+  OpsSnapshot,
+  PublicConfig,
+  ReleaseChannel,
+  RoomSnapshot,
+  RoomSummary,
+  SystemStatus,
+} from "@paint-arena/shared";
 
 const ADMIN_TOKEN_KEY = "color-turf-admin-token";
 
@@ -19,6 +28,16 @@ const requestJson = async <T>(path: string, init?: RequestInit, admin = false): 
   const body = await response.json() as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Request failed: ${response.status}`);
   return body;
+};
+
+const releaseChannelPath = (path: string, releaseChannel: ReleaseChannel) => `${path}?releaseChannel=${releaseChannel}`;
+
+const opsPath = (releaseChannel?: ReleaseChannel, roomCode?: string) => {
+  const search = new URLSearchParams();
+  if (releaseChannel) search.set("releaseChannel", releaseChannel);
+  if (roomCode) search.set("roomCode", roomCode);
+  const query = search.toString();
+  return `/api/ops${query ? `?${query}` : ""}`;
 };
 
 export const api = {
@@ -64,11 +83,35 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ action, count }),
   }, true),
-  ops: (releaseChannel?: "stable" | "canary") => requestJson<OpsSnapshot>(
-    `/api/ops${releaseChannel ? `?releaseChannel=${releaseChannel}` : ""}`,
+  ops: (releaseChannel?: ReleaseChannel, roomCode?: string) => requestJson<OpsSnapshot>(
+    opsPath(releaseChannel, roomCode),
   ),
   triggerMemoryOom: () => requestJson<OpsSnapshot>("/api/admin/faults/memory-oom", {
     method: "POST",
     body: JSON.stringify({}),
+  }, true),
+  setDemoTickLag: (delayMs: number, releaseChannel: ReleaseChannel, roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/lag", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify({ ...(roomCode ? { roomCode } : {}), delayMs }),
+  }, true),
+  setDemoFullBroadcast: (enabled: boolean, releaseChannel: ReleaseChannel, roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/full-broadcast", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify({ ...(roomCode ? { roomCode } : {}), enabled }),
+  }, true),
+  requestDemoServerShutdown: (releaseChannel: ReleaseChannel, reason?: string, roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/server-shutdown", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify({ ...(roomCode ? { roomCode } : {}), ...(reason ? { reason } : {}) }),
+  }, true),
+  simulateDemoPrimaryFailure: (releaseChannel: ReleaseChannel, reason?: string, roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/primary-failure", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify({ ...(roomCode ? { roomCode } : {}), ...(reason ? { reason } : {}) }),
+  }, true),
+  simulateDemoFailover: (releaseChannel: ReleaseChannel, targetCluster: Exclude<ClusterName, "primary"> = "dr", roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/failover", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify({ ...(roomCode ? { roomCode } : {}), targetCluster }),
+  }, true),
+  resetDemoChaos: (releaseChannel: ReleaseChannel, roomCode?: string) => requestJson<DemoChaosActionResponse>(releaseChannelPath("/api/admin/chaos/reset", releaseChannel), {
+    method: "POST",
+    body: JSON.stringify(roomCode ? { roomCode } : {}),
   }, true),
 };
