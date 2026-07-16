@@ -9,7 +9,7 @@
 | 항목 | 결과 | 실행 증거 |
 | --- | --- | --- |
 | TypeScript | PASS | `npm run typecheck`: shared, game-api, bot, web 모두 exit 0 |
-| 테스트 | PASS | `npm test`: game-api 15 passed / Redis integration 1 skipped, web 8 passed |
+| 테스트 | PASS | `npm test`: game-api 16 passed / Redis integration 1 skipped, web 8 passed |
 | 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 97 modules build |
 | Compose | PASS | `docker compose config --quiet`, 이미지 빌드, Redis/server-stable/frontend 모두 healthy |
 | Kustomize | PASS | `kubectl kustomize deploy/k8s` exit 0 |
@@ -52,6 +52,7 @@
 
 ## 2026-07-16 관리자 탭·참가자 브라우저 재검증
 
+- 실제 Socket.IO 클라이언트 2개가 방에 입장해 서로 다른 팀을 배정받고, Start → 양쪽 이동 입력·채색 Delta → Pause 중 입력 거부 → Resume → End → 양 팀 최종 점수와 운영 이벤트까지 확인하는 전체 경기 smoke test를 추가했다.
 - `/admin`에서 `게임 진행 상황`, `게임·봇 제어`, `운영 지표` 세 탭이 각각 필요한 패널만 노출하는지 DOM과 화면으로 확인했다.
 - 운영 지표의 게임 Tick P95 `?`를 열어 지표 의미, 정상 기준, `/api/config`·`/api/ops`·Node.js 런타임·Kubernetes API 중 실제 수집 출처가 키보드 포커스와 화면에 노출되는 것을 확인했다.
 - 제어 탭에서 실제 WebSocket 봇을 `1개 → 10개 → 15개`로 추가했다. 경기 시작 뒤 관리자 스트림이 초당 `29~30회`를 표시했고 점유율·참가자 수가 실시간으로 변했다. 빠른 `＋ 봇 5개`와 `모두 회수`도 UI에서 실행해 최종 봇 `0개`를 확인했다.

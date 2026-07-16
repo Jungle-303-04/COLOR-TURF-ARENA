@@ -173,7 +173,7 @@ helm lint .\deploy\helm\color-turf
 kubectl kustomize .\deploy\k8s
 ```
 
-테스트는 Paint/Delta/속도 제한/팀 배정/종료, Snapshot 직렬화·복원, Lease, 두 실제 Socket.IO client, 관리자·Ops 토큰, Paint Boost, metrics를 검증한다.
+테스트는 Paint/Delta/속도 제한/팀 배정/종료, Snapshot 직렬화·복원, Lease, 관리자·Ops 토큰, Paint Boost, metrics를 검증한다. 두 실제 Socket.IO client smoke test는 방 생성 → 팀 배정 → Start → 이동·채색 → Pause/Resume → End → 최종 점수와 운영 이벤트까지 한 흐름으로 확인한다.
 
 ## Kubernetes Helm 배포
 
