@@ -4,9 +4,10 @@ import type { EventLogEntry, RoomSnapshot, StateDelta, TeamId, WatchResult } fro
 import { BrandMark } from "../components/AppShell";
 import { QrCode } from "../components/QrCode";
 import { StatusPill } from "../components/StatusPill";
-import { ArenaCanvasRenderer } from "../game/arenaCanvas";
+import { ArenaCanvasRenderer, selectWorldLabelPlayers } from "../game/arenaCanvas";
 import { api } from "../lib/api";
 import { formatTime, formatTimer } from "../lib/format";
+import { startRenderTelemetry } from "../lib/renderTelemetry";
 import { isRoomRecoveryPending, retryWithBackoff, ROOM_RECOVERY_ACK_TIMEOUT_MS, ROOM_RECOVERY_RETRY_POLICY } from "../lib/retry";
 import { createSocket } from "../lib/socket";
 import { applyStateDelta } from "../lib/state";
@@ -22,6 +23,9 @@ export const ScreenPage = () => {
   const [timeline, setTimeline] = useState<EventLogEntry[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<ArenaCanvasRenderer | null>(null);
+  const socketRef = useRef<ReturnType<typeof createSocket> | null>(null);
+
+  useEffect(() => startRenderTelemetry(() => socketRef.current), []);
 
   useEffect(() => {
     void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
@@ -71,6 +75,7 @@ export const ScreenPage = () => {
       if (disposed) return;
 
       socket = createSocket(socketPath);
+      socketRef.current = socket;
       socket.on("connect", watch);
       socket.on("disconnect", () => {
         watchAttempt?.abort();
@@ -90,12 +95,13 @@ export const ScreenPage = () => {
       watchAttempt?.abort();
       watchAttempt = null;
       socket?.disconnect();
+      socketRef.current = null;
     };
   }, [roomCode]);
 
   useEffect(() => {
     if (!canvasRef.current) return;
-    const renderer = new ArenaCanvasRenderer(canvasRef.current);
+    const renderer = new ArenaCanvasRenderer(canvasRef.current, { showPlayerLabels: true, maxPlayerLabels: 24 });
     rendererRef.current = renderer;
     if (snapshot) renderer.update(snapshot);
     return () => { renderer.destroy(); rendererRef.current = null; };
@@ -114,6 +120,7 @@ export const ScreenPage = () => {
   const humans = snapshot?.players.filter((player) => !player.isBot).length ?? 0;
   const bots = snapshot?.players.filter((player) => player.isBot).length ?? 0;
   const degraded = snapshot?.server.broadcastMode === "full";
+  const rosterPlayers = useMemo(() => selectWorldLabelPlayers(snapshot?.players ?? [], 8), [snapshot]);
 
   return (
     <div className="screen-page">
@@ -156,6 +163,15 @@ export const ScreenPage = () => {
           {snapshot.announcement && <div className="watch-announcement">{snapshot.announcement}</div>}
 
           <aside className="watch-timeline"><span>LIVE OPERATIONS</span>{timeline.slice(0, 5).map((event) => <article key={event.id}><time>{formatTime(event.at)}</time><div><b>{event.type}</b><p>{event.message}</p></div></article>)}</aside>
+          {snapshot.status !== "lobby" && <aside className="watch-player-roster" aria-label="실시간 참가자 닉네임">
+            <span>실시간 참가자</span>
+            <div role="list">{rosterPlayers.map((player) => <div role="listitem" className={player.connected ? "" : "is-disconnected"} key={player.id}>
+              <i style={{ backgroundColor: snapshot.config.teams[player.team].color }} />
+              <b>{player.nickname}</b>
+              <small>{player.isBot ? "봇" : "참가자"} · {player.team === "A" ? "빨강" : "파랑"}</small>
+            </div>)}</div>
+            {snapshot.players.length > rosterPlayers.length && <em>외 {snapshot.players.length - rosterPlayers.length}명</em>}
+          </aside>}
           <div className="arena-corner-label"><span>{snapshot.server.cluster.toUpperCase()} · {snapshot.server.releaseChannel.toUpperCase()}</span><b>{snapshot.server.version}</b></div>
         </main>
 

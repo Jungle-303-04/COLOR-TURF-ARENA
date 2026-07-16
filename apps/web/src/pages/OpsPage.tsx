@@ -110,6 +110,16 @@ export const OpsPage = () => {
           <strong>{formatNumber(server?.metrics.eventLoopLagP95Ms ?? 0, 1)}<em>ms</em></strong>
           <small>Node.js 런타임 지연</small>
         </article>
+        <article className="ops-metric ops-metric-emphasis">
+          <MetricLabel label="게임 화면 FPS P10" description="플레이·관전 브라우저가 requestAnimationFrame으로 직접 측정해 보고한 FPS의 하위 10% 값이다." source="/api/ops → server.metrics.clientFpsP10 · client_render_stats" />
+          <strong>{(server?.metrics.clientTelemetryClients ?? 0) > 0 ? formatNumber(server?.metrics.clientFpsP10 ?? 0, 1) : "—"}<em>{(server?.metrics.clientTelemetryClients ?? 0) > 0 ? "fps" : ""}</em></strong>
+          <small>실측 화면 {server?.metrics.clientTelemetryClients ?? 0}개</small>
+        </article>
+        <article className="ops-metric">
+          <MetricLabel label="프레임 누락 P95" description="60fps 기준 requestAnimationFrame 간격보다 길어진 구간에서 추정한 화면 프레임 누락률이다." source="/api/ops → server.metrics.clientFrameDropP95Percent" />
+          <strong>{(server?.metrics.clientTelemetryClients ?? 0) > 0 ? formatNumber(server?.metrics.clientFrameDropP95Percent ?? 0, 1) : "—"}<em>{(server?.metrics.clientTelemetryClients ?? 0) > 0 ? "%" : ""}</em></strong>
+          <small>서버 Tick이 아닌 브라우저 화면 실측</small>
+        </article>
         <article className="ops-metric">
           <MetricLabel label="활성 경기장" description="현재 상태가 running인 방의 수다." source="/api/ops → rooms[].status" />
           <strong>{activeRooms}</strong>

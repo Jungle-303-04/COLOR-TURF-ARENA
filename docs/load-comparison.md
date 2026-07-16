@@ -9,6 +9,8 @@ npm run --silent load:compare |
 
 출력 JSON에는 Delta/Full 각각의 연결 Bot 수, 예상·실제 입력 수와 전달률, 입력 스케줄 지연 P95, 상태 메시지 처리량, 대표 Payload 크기, 전체 Client 전송량 추정치, Tick/Broadcast/Event Loop P95, CPU·RSS와 Full/Delta 비율이 들어간다. `ok=true`는 두 모드 모두 요청한 Bot 수가 연결되고 예상 입력 수를 정확히 전송했으며, Delta는 `state_delta`만, Full은 전체 `room_snapshot`만 수신하고 Full Payload가 Delta보다 큰 경우다.
 
+이 러너는 서버와 headless Socket client 부하를 비교하며 브라우저 화면 FPS를 대신하지 않는다. 실제 UI 프레임 저하는 플레이·관전 화면이 `client_render_stats`로 보고한 `game_client_render_fps_p10`, `game_client_render_frame_drop_ratio_p95`와 관리자 `운영 지표` 그래프에서 별도로 확인한다.
+
 측정 시간을 늘리거나 현재 기본 월드인 `216×216`으로 확인하려면 환경변수를 사용한다.
 
 ```powershell

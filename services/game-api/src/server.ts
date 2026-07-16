@@ -6,10 +6,12 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { Server as SocketServer, type Socket } from "socket.io";
 import {
   TEAM_IDS,
+  clientRenderStatsPayloadSchema,
   inputPayloadSchema,
   joinPayloadSchema,
   opsEventSchema,
   type BroadcastMode,
+  type ClientRenderStatsPayload,
   type ClusterName,
   type EventLogEntry,
   type GameConfig,
@@ -63,6 +65,7 @@ export interface GameServerOptions {
   memoryOomSchedule?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   memoryOomChunkBytes?: number;
   memoryOomIntervalMs?: number;
+  clientRenderTelemetryTtlMs?: number;
 }
 
 export interface RunningGameServer {
@@ -83,6 +86,11 @@ interface RuntimeStats {
   payloadBytes: number[];
   lastSnapshotAt: number | null;
   cpuPercent: number;
+}
+
+interface ClientRenderObservation {
+  observedAt: number;
+  stats: ClientRenderStatsPayload;
 }
 
 type RoomClusterCommand =
@@ -175,7 +183,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const kubernetes = new KubernetesObserver();
   const storage = options.snapshotStorage ?? createSnapshotStorage(options.redisUrl);
   const startedAt = new Date().toISOString();
-  const ownerId = `${options.clusterName ?? process.env.CLUSTER_NAME ?? "primary"}:${options.podName ?? process.env.POD_NAME ?? "local"}:${randomUUID()}`;
+  const stableVersion = options.appVersion ?? process.env.SERVER_VERSION ?? process.env.APP_VERSION ?? "v1.1.3";
+  const ownerId = `${options.clusterName ?? process.env.CLUSTER_NAME ?? "primary"}:${options.podName ?? process.env.POD_NAME ?? "local"}:${stableVersion}:${randomUUID()}`;
   const redisUrl = options.redisUrl ?? process.env.REDIS_URL;
   const socketCluster = redisUrl ? new RedisSocketCluster(redisUrl) : null;
   const roomCoordinator = redisUrl
@@ -183,11 +192,14 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     : null;
   const leaseTtlMs = 7000;
   const snapshotIntervalMs = Math.max(250, options.snapshotIntervalMs ?? numeric(process.env.SNAPSHOT_INTERVAL_MS, 1000));
+  const clientRenderTelemetryTtlMs = Math.max(
+    50,
+    options.clientRenderTelemetryTtlMs ?? numeric(process.env.CLIENT_RENDER_TELEMETRY_TTL_MS, 5_000),
+  );
   const adminToken = options.adminToken ?? process.env.ADMIN_TOKEN ?? "demo-admin";
   const demoAdminAuthDisabled = process.env.DEMO_ADMIN_AUTH_DISABLED === "true";
   const singleUseMode = process.env.SINGLE_USE_GAME === "true";
   const opsEventToken = options.opsEventToken ?? process.env.OPS_EVENT_TOKEN ?? "demo-ops";
-  const stableVersion = options.appVersion ?? process.env.SERVER_VERSION ?? process.env.APP_VERSION ?? "v1.1.3";
   const canaryVersion = process.env.CANARY_SERVER_VERSION ?? "v1.2.0";
   const configuredBroadcastMode = options.broadcastMode ?? (process.env.BROADCAST_MODE === "full" ? "full" : "delta");
   const configuredTickDelayMs = Math.max(0, options.demoTickDelayMs ?? numeric(process.env.DEMO_TICK_DELAY_MS, 0));
@@ -213,6 +225,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     cpuPercent: 0,
   };
   const persistedSnapshotAtByRoom = new Map<string, number>();
+  const clientRenderObservations = new Map<string, ClientRenderObservation>();
   let lastCpuUsage = process.cpuUsage();
   let lastCpuSampleAt = Date.now();
   const runtimeMode = {
@@ -407,21 +420,41 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }];
   });
 
-  const runtimeMetricSummary = () => ({
-    tickMeanMs: stats.tickDurationsMs.length === 0 ? 0 : stats.tickDurationsMs.reduce((sum, value) => sum + value, 0) / stats.tickDurationsMs.length,
-    tickP95Ms: percentile(stats.tickDurationsMs),
-    broadcastP95Ms: percentile(stats.broadcastDurationsMs),
-    websocketRttP95Ms: percentile(stats.rttValuesMs),
-    statePayloadBytes: Math.round(percentile(stats.payloadBytes)),
-    reconnects: stats.reconnects,
-    snapshotCreatedAt: stats.lastSnapshotAt ? new Date(stats.lastSnapshotAt).toISOString() : null,
-    snapshotAgeSeconds: stats.lastSnapshotAt ? Math.max(0, (Date.now() - stats.lastSnapshotAt) / 1000) : null,
-    eventLoopLagP95Ms: Number.isFinite(eventLoopDelay.percentile(95)) ? eventLoopDelay.percentile(95) / 1_000_000 : 0,
-    cpuPercent: stats.cpuPercent,
-    memoryRssMb: process.memoryUsage().rss / 1024 / 1024,
-    heapUsedMb: process.memoryUsage().heapUsed / 1024 / 1024,
-    inputRejectRate: stats.totalInputEvents === 0 ? 0 : (stats.rejectedInputEvents / stats.totalInputEvents) * 100,
-  });
+  const currentClientRenderMetrics = (now = Date.now()) => {
+    for (const [socketId, observation] of clientRenderObservations) {
+      if (now - observation.observedAt > clientRenderTelemetryTtlMs) clientRenderObservations.delete(socketId);
+    }
+    const observations = [...clientRenderObservations.values()];
+    return {
+      fpsP10: percentile(observations.map((observation) => observation.stats.fps), 0.1),
+      frameTimeP95Ms: percentile(observations.map((observation) => observation.stats.frameTimeP95Ms)),
+      frameDropP95Percent: percentile(observations.map((observation) => observation.stats.droppedFramePercent)),
+      clients: observations.length,
+    };
+  };
+
+  const runtimeMetricSummary = () => {
+    const clientRender = currentClientRenderMetrics();
+    return {
+      tickMeanMs: stats.tickDurationsMs.length === 0 ? 0 : stats.tickDurationsMs.reduce((sum, value) => sum + value, 0) / stats.tickDurationsMs.length,
+      tickP95Ms: percentile(stats.tickDurationsMs),
+      broadcastP95Ms: percentile(stats.broadcastDurationsMs),
+      websocketRttP95Ms: percentile(stats.rttValuesMs),
+      clientFpsP10: clientRender.fpsP10,
+      clientFrameTimeP95Ms: clientRender.frameTimeP95Ms,
+      clientFrameDropP95Percent: clientRender.frameDropP95Percent,
+      clientTelemetryClients: clientRender.clients,
+      statePayloadBytes: Math.round(percentile(stats.payloadBytes)),
+      reconnects: stats.reconnects,
+      snapshotCreatedAt: stats.lastSnapshotAt ? new Date(stats.lastSnapshotAt).toISOString() : null,
+      snapshotAgeSeconds: stats.lastSnapshotAt ? Math.max(0, (Date.now() - stats.lastSnapshotAt) / 1000) : null,
+      eventLoopLagP95Ms: Number.isFinite(eventLoopDelay.percentile(95)) ? eventLoopDelay.percentile(95) / 1_000_000 : 0,
+      cpuPercent: stats.cpuPercent,
+      memoryRssMb: process.memoryUsage().rss / 1024 / 1024,
+      heapUsedMb: process.memoryUsage().heapUsed / 1024 / 1024,
+      inputRejectRate: stats.totalInputEvents === 0 ? 0 : (stats.rejectedInputEvents / stats.totalInputEvents) * 100,
+    };
+  };
 
   const getOpsSnapshot = async (): Promise<OpsSnapshot> => {
     await syncSharedEvents();
@@ -453,7 +486,13 @@ export const createGameServer = (options: GameServerOptions = {}) => {
           : "Kubernetes가 OOMKilled를 기록했고 컨테이너를 다시 시작하고 있습니다.",
       };
     }
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries, snapshotAgeSamples(now));
+    const runtimeMetrics = runtimeMetricSummary();
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries, snapshotAgeSamples(now), {
+      fpsP10: runtimeMetrics.clientFpsP10,
+      frameTimeP95Ms: runtimeMetrics.clientFrameTimeP95Ms,
+      frameDropP95Percent: runtimeMetrics.clientFrameDropP95Percent,
+      clients: runtimeMetrics.clientTelemetryClients,
+    });
     return {
       observedAt: new Date(now).toISOString(),
       server: {
@@ -468,7 +507,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         disconnects: stats.disconnects,
         reconnects: stats.reconnects,
         identity: baseIdentity(),
-        metrics: runtimeMetricSummary(),
+        metrics: runtimeMetrics,
       },
       rooms: summaries,
       infrastructure,
@@ -824,15 +863,31 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   app.get("/healthz", (_request, response) => response.json({ status: "ok", service: "color-turf-game-server", version: baseIdentity().version }));
   app.get("/readyz", (_request, response) => {
-    const ready = storage.isReady();
-    response.status(ready ? 200 : 503).json({ status: ready ? "ready" : "not-ready", store: storage.kind, roomCount: roomStore.list().length });
+    const storageReady = storage.isReady();
+    const gameLoopReady = tickSchedulerActive;
+    const configReady = DEFAULT_TICK_RATE_HZ > 0 && snapshotIntervalMs > 0 && Boolean(stableVersion && baseIdentity().cluster);
+    const ready = storageReady && gameLoopReady && configReady;
+    response.status(ready ? 200 : 503).json({
+      status: ready ? "ready" : "not-ready",
+      store: storage.kind,
+      storageReady,
+      gameLoopReady,
+      configReady,
+      roomCount: roomStore.list().length,
+    });
   });
   app.get("/version", (_request, response) => {
     const version: VersionInfo = { ...baseIdentity(), startedAt };
     response.json(version);
   });
   app.get("/metrics", async (_request, response) => {
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries(), snapshotAgeSamples());
+    const runtimeMetrics = runtimeMetricSummary();
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries(), snapshotAgeSamples(), {
+      fpsP10: runtimeMetrics.clientFpsP10,
+      frameTimeP95Ms: runtimeMetrics.clientFrameTimeP95Ms,
+      frameDropP95Percent: runtimeMetrics.clientFrameDropP95Percent,
+      clients: runtimeMetrics.clientTelemetryClients,
+    });
     response.setHeader("Content-Type", metrics.register.contentType);
     response.send(await metrics.register.metrics());
   });
@@ -1128,13 +1183,20 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     socket.on("room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
     socket.on("ops.watch", async (acknowledge?: (snapshot: OpsSnapshot) => void) => {
       const data = socket.data as SocketData;
-      if (data.role !== "admin") data.role = "ops";
+      if (data.role !== "admin") {
+        data.role = "ops";
+        clientRenderObservations.delete(socket.id);
+      }
       void socket.join("ops");
       acknowledge?.(await getOpsSnapshot());
     });
     socket.on("admin_subscribe", (payload: { token?: string }, acknowledge?: (result: { ok: boolean }) => void) => {
       const ok = demoAdminAuthDisabled || payload.token === adminToken;
-      if (ok) { (socket.data as SocketData).role = "admin"; void socket.join("ops"); }
+      if (ok) {
+        (socket.data as SocketData).role = "admin";
+        clientRenderObservations.delete(socket.id);
+        void socket.join("ops");
+      }
       acknowledge?.({ ok });
     });
     socket.on("admin.room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => {
@@ -1193,8 +1255,29 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       const rttMs = numeric(payload?.rttMs, -1);
       if (rttMs >= 0 && rttMs <= 60_000) pushWindow(stats.rttValuesMs, rttMs);
     });
+    socket.on("client_render_stats", (
+      rawPayload: unknown,
+      acknowledge?: (result: { ok: boolean; error?: "invalid-payload" | "unauthorized-role" }) => void,
+    ) => {
+      const role = (socket.data as SocketData).role;
+      if (role !== "controller" && role !== "watcher") {
+        acknowledge?.({ ok: false, error: "unauthorized-role" });
+        return;
+      }
+      const parsed = clientRenderStatsPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        acknowledge?.({ ok: false, error: "invalid-payload" });
+        return;
+      }
+      clientRenderObservations.set(socket.id, {
+        observedAt: Date.now(),
+        stats: parsed.data,
+      });
+      acknowledge?.({ ok: true });
+    });
     socket.on("disconnect", () => {
       stats.disconnects += 1;
+      clientRenderObservations.delete(socket.id);
       const data = socket.data as SocketData;
       if (data.role === "controller" && data.roomCode && data.sessionId) {
         void dispatchRoomCommand({

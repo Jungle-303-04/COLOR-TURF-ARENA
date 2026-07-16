@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { getCameraViewport, getCanvasFit, interpolatePosition } from "./arenaCanvas";
+import type { PlayerPublic } from "@paint-arena/shared";
+import {
+  getCameraViewport,
+  getCanvasFit,
+  getWorldPlayerLabelPlacement,
+  interpolatePosition,
+  selectWorldLabelPlayers,
+} from "./arenaCanvas";
+
+const player = (id: string, nickname: string, connected: boolean, isBot: boolean): PlayerPublic => ({
+  id,
+  nickname,
+  connected,
+  isBot,
+  team: id.length % 2 === 0 ? "A" : "B",
+  joinedAt: "2026-07-16T00:00:00.000Z",
+  position: { x: 10, y: 10 },
+});
 
 describe("authoritative position interpolation", () => {
   it("smoothly interpolates between 30Hz server positions", () => {
@@ -36,5 +53,41 @@ describe("player camera viewport", () => {
 
   it("uses the whole world when it is smaller than the camera", () => {
     expect(getCameraViewport(40, 30, 20, 15)).toEqual({ left: 0, top: 0, width: 40, height: 30 });
+  });
+});
+
+describe("world player labels", () => {
+  it("prioritizes human nicknames and enforces the clutter limit", () => {
+    const selected = selectWorldLabelPlayers([
+      player("bot-online", "BOT-ONLINE", true, true),
+      player("human-away", "사람-오프라인", false, false),
+      player("bot-away", "BOT-AWAY", false, true),
+      player("human-online-b", "사람-B", true, false),
+      player("human-online-a", "사람-A", true, false),
+    ], 3);
+
+    expect(selected.map((candidate) => candidate.nickname)).toEqual(["사람-A", "사람-B", "사람-오프라인"]);
+  });
+
+  it("uses the lower side near the top edge and avoids occupied label boxes", () => {
+    const input = {
+      centerX: 50,
+      centerY: 10,
+      radius: 8,
+      labelWidth: 40,
+      offsetX: 0,
+      offsetY: 0,
+      renderWidth: 100,
+      renderHeight: 100,
+    };
+    const placement = getWorldPlayerLabelPlacement(input);
+
+    expect(placement).toEqual({ left: 25, top: 23, width: 50, height: 16 });
+    expect(getWorldPlayerLabelPlacement(input, [{
+      left: placement?.left ?? 0,
+      top: placement?.top ?? 0,
+      right: (placement?.left ?? 0) + (placement?.width ?? 0),
+      bottom: (placement?.top ?? 0) + (placement?.height ?? 0),
+    }])).toBeNull();
   });
 });

@@ -126,6 +126,7 @@ export interface RoomSummary {
   bots: number;
   connectedPlayers: number;
   teamPlayers: Record<TeamId, number>;
+  connectedTeamPlayers: Record<TeamId, number>;
   scores: Record<TeamId, number>;
   percentages: Record<TeamId, number>;
   remainingMs: number;
@@ -180,6 +181,10 @@ export interface RuntimeMetricSummary {
   tickP95Ms: number;
   broadcastP95Ms: number;
   websocketRttP95Ms: number;
+  clientFpsP10: number;
+  clientFrameTimeP95Ms: number;
+  clientFrameDropP95Percent: number;
+  clientTelemetryClients: number;
   statePayloadBytes: number;
   reconnects: number;
   snapshotCreatedAt: string | null;
@@ -236,6 +241,16 @@ export const inputPayloadSchema = z.object({
 }).refine((value) => Boolean(value.sessionId || value.clientId), { message: "sessionId is required" });
 
 export type InputPayload = z.infer<typeof inputPayloadSchema>;
+
+export const clientRenderStatsPayloadSchema = z.object({
+  fps: z.number().finite().min(0).max(1000),
+  frameTimeP95Ms: z.number().finite().min(0).max(60_000),
+  droppedFramePercent: z.number().finite().min(0).max(100),
+  sampleDurationMs: z.number().finite().min(100).max(120_000),
+  frameCount: z.number().int().min(0).max(1_000_000),
+}).strict();
+
+export type ClientRenderStatsPayload = z.infer<typeof clientRenderStatsPayloadSchema>;
 
 export const opsEventTypes = [
   "DEPLOYMENT_STARTED",

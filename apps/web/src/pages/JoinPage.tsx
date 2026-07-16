@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import { createClientSessionId } from "../lib/clientId";
 import { formatTimer } from "../lib/format";
 import { buildJoinPayload } from "../lib/joinPayload";
+import { startRenderTelemetry } from "../lib/renderTelemetry";
 import { isRoomRecoveryPending, retryWithBackoff, ROOM_RECOVERY_ACK_TIMEOUT_MS, ROOM_RECOVERY_RETRY_POLICY } from "../lib/retry";
 import { createSocket } from "../lib/socket";
 import { applyStateDelta } from "../lib/state";
@@ -43,6 +44,7 @@ export const JoinPage = () => {
   const [connection, setConnection] = useState<"connecting" | "restoring" | "connected" | "offline">("connecting");
   const [message, setMessage] = useState("닉네임은 선택 사항입니다. 바로 입장하면 서버가 Guest-N 이름을 만듭니다.");
   const [rtt, setRtt] = useState(0);
+  const [renderFps, setRenderFps] = useState(0);
   const [stick, setStick] = useState<Vector2>({ x: 0, y: 0 });
   const socketRef = useRef<ReturnType<typeof createSocket> | null>(null);
   const snapshotRef = useRef<RoomSnapshot | null>(null);
@@ -60,6 +62,10 @@ export const JoinPage = () => {
   useEffect(() => { snapshotRef.current = snapshot; }, [snapshot]);
   useEffect(() => { nicknameRef.current = nickname; }, [nickname]);
   useEffect(() => { joinedRef.current = hasJoined; }, [hasJoined]);
+  useEffect(() => startRenderTelemetry(
+    () => socketRef.current,
+    { onSample: (sample) => setRenderFps(sample.fps) },
+  ), []);
 
   const saveSession = useCallback((patch: Partial<StoredSession>) => {
     storedRef.current = { ...storedRef.current, ...patch };
@@ -302,7 +308,7 @@ export const JoinPage = () => {
           <div className="joystick-copy"><b>MOVE & PAINT</b><span>확대된 시야가 내 캐릭터를 따라갑니다. 미니맵의 흰 박스가 현재 보이는 구역입니다.</span><div className="joystick-live-info"><span><small>TEAM</small><b>{player?.team ?? "—"}</b></span><span><small>WORLD</small><b>{snapshot ? `${snapshot.config.gridWidth}×${snapshot.config.gridHeight}` : "—"}</b></span><span><small>ROOM</small><b>{roomCode}</b></span></div></div>
         </section>
 
-        <div className="mobile-server-strip"><span>PING {rtt}ms</span><span>{snapshot?.server.version ?? "—"}</span><span>{snapshot?.server.cluster.toUpperCase() ?? "—"}</span><span>{snapshot?.server.releaseChannel.toUpperCase() ?? "—"}</span></div>
+        <div className="mobile-server-strip"><span>FPS {renderFps > 0 ? Math.round(renderFps) : "—"}</span><span>PING {rtt}ms</span><span>{snapshot?.server.version ?? "—"}</span><span>{snapshot?.server.cluster.toUpperCase() ?? "—"}</span><span>{snapshot?.server.releaseChannel.toUpperCase() ?? "—"}</span></div>
       </main>}
 
       {reconnecting && <div className="reconnect-overlay"><div className="reconnect-spinner" /><h2>서버에 다시 연결하는 중입니다.</h2><p>최근 게임 상태를 복구하고 있습니다.</p></div>}

@@ -9,8 +9,8 @@
 | 항목 | 결과 | 실행 증거 |
 | --- | --- | --- |
 | TypeScript | PASS | `npm run typecheck`: shared, game-api, bot, web 모두 exit 0 |
-| 테스트 | PASS | `npm test`: game-api 23 passed / Redis integration 1 skipped, web 17 passed |
-| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 99 modules build |
+| 테스트 | PASS | `npm test`: game-api 24 passed / Redis integration 1 skipped, web 22 passed |
+| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 100 modules build |
 | Compose 정적 구성 | PASS | `docker compose config --quiet`, 기본 서비스가 Redis/Stable/Canary/DR/Web으로 해석됨 |
 | Kustomize | PASS | `kubectl kustomize deploy/k8s` exit 0 |
 | Helm | PASS | 기본·Primary·Canary-bad·DR values에 대해 `helm lint`와 `helm template` exit 0 |
@@ -82,6 +82,16 @@
 - `npm run load:compare`는 독립된 Delta/Full 서버와 10개 client worker를 사용해 50 Bot × 10Hz를 각각 5초 측정한다. 양쪽 모두 `2,500/2,500` 입력·거부 0이었고 Full/Delta는 대표 Payload `5.493배`, 서버 Payload P95 `5.301배`, Broadcast P95 `1.598배`, Event Loop P95 `1.573배`, CPU `4.355배`였다. 원본은 `docs/evidence/load-comparison-2026-07-16.json`에 저장했다.
 - Helm/Kustomize에는 Nginx 시작을 막던 누락 `server-dr` DNS와 항상 해석 가능한 `server-canary` Service를 추가했다. 공개 Primary values는 관리자 인증을 유지하고 OOM 주입을 끄며, 인증 우회·실제 OOM은 외부 공개 경로가 없는 `values-isolated-chaos-demo.yaml`에만 분리했다.
 - GitHub Actions CI는 Node 24에서 typecheck/test/build, Playwright, 부하 비교, Compose config, Helm lint와 Kustomize render를 모든 push와 PR에서 실행한다.
+
+## 2026-07-16 관전 닉네임·브라우저 FPS 관제 보강
+
+- `/watch` 전체 Canvas와 관리자 확대 모달은 사람을 우선해 최대 24명의 닉네임 라벨을 표시한다. 화면 경계와 기존 라벨을 피해 위·아래 위치를 선택하며 과밀하면 일부 봇 라벨을 생략한다.
+- 관전 화면에는 접근 가능한 실시간 참가자 명단도 표시한다. Playwright가 닉네임 `브라우저-E2E`의 실제 노출을 검증한다.
+- 플레이·관전 브라우저는 `requestAnimationFrame` 간격을 1초 단위로 집계해 `client_render_stats`로 보낸다. 서버는 controller/watcher 역할과 Zod payload를 검증하고, 최근 5초 표본만 집계한다.
+- `/api/ops`와 `/metrics`는 실제 화면 FPS P10, 프레임 시간 P95, 60fps 기준 프레임 누락률 P95, 활성 보고 브라우저 수를 제공한다. 관리자 `운영 지표`는 서버 Tick 그래프와 구분해 최대 120초 그래프로 표시한다.
+- E2E는 `390×844` 모바일 Canvas의 실제 bounding box가 정사각형인지, 관전 닉네임이 보이는지, FPS KPI가 `표본 대기`에서 실제 `fps` 값으로 전환되는지를 확인했다.
+- 현재 화면 증거는 `docs/evidence/screenshots/admin-client-render-metrics.png`, `join-mobile-square-fps.png`, `watch-player-nicknames.png`에 저장했다.
+- Helm ServiceMonitor는 Stable Service와 Canary Service를 별도 selector로 수집한다. Canary 비활성 시 하나, 활성 시 두 ServiceMonitor가 렌더되는 것을 확인했다.
 
 ## 아직 외부 환경 증거가 필요한 항목
 

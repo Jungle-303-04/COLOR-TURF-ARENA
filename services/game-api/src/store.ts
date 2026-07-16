@@ -77,7 +77,11 @@ export class MemoryRoomStore implements RoomStore {
 
 export const summarizeRoom = (snapshot: RoomSnapshot): RoomSummary => {
   const teamPlayers: Record<TeamId, number> = { A: 0, B: 0 };
-  for (const player of snapshot.players) teamPlayers[player.team] += 1;
+  const connectedTeamPlayers: Record<TeamId, number> = { A: 0, B: 0 };
+  for (const player of snapshot.players) {
+    teamPlayers[player.team] += 1;
+    if (player.connected) connectedTeamPlayers[player.team] += 1;
+  }
   const bots = snapshot.players.filter((player) => player.isBot).length;
   return {
     roomCode: snapshot.roomCode,
@@ -87,6 +91,7 @@ export const summarizeRoom = (snapshot: RoomSnapshot): RoomSummary => {
     bots,
     connectedPlayers: snapshot.players.filter((player) => player.connected).length,
     teamPlayers,
+    connectedTeamPlayers,
     scores: { ...snapshot.scores.cells },
     percentages: { ...snapshot.scores.percentage },
     remainingMs: snapshot.remainingMs,

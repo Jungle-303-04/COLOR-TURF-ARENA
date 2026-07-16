@@ -41,7 +41,8 @@
 2. Canary Arena를 만들어 `v1.2.0 · FULL`을 보여준다.
 3. 관리자 `게임·봇 제어` 탭에서 실제 WebSocket Bot을 50개부터 추가하고 경기를 시작한다.
 4. `/ops`와 관리자 `운영 지표` 탭에서 Tick p95, Event Loop p95, CPU, Broadcast와 Payload 증가를 비교한다.
-5. 관전 화면의 작은 `DEGRADED` 표시를 확인한다.
+5. 플레이·관전 브라우저가 열린 상태에서 `게임 화면 FPS P10` 하락과 `프레임 누락 P95` 상승을 함께 보여준다. 이 두 값은 서버 Tick을 환산한 값이 아니라 브라우저 `requestAnimationFrame` 실측이다.
+6. 관전 화면의 작은 `DEGRADED` 표시를 확인한다.
 
 이 단계의 수치는 가짜 상태가 아니다. `/socket/canary`로 분리된 Canary authority의 전체 Grid 직렬화와 실제 Bot 입력이 만든 런타임 측정값이다. 별도 Canary Pod를 배포한 환경에서는 `server-canary` Service의 `/metrics`도 함께 비교한다.
 
@@ -80,6 +81,7 @@
 - Stable/Canary Version과 Broadcast mode
 - 실제 Kubernetes Pod/replica/restart/CPU/memory
 - `/metrics`의 게임 전용 Histogram/Counter
+- 브라우저 화면 FPS P10과 프레임 누락 P95
 
 실제 Kubernetes를 사용한다면 이 구간에서만 관리자 `실제 OOMKilled 시작`을 선택적으로 사용한다. Helm의 `chaos.allowPodOom=true`가 명시된 격리된 데모 namespace에서 실행하고, 완료 판정은 화면 문구가 아니라 Pod의 `lastState.terminated.reason=OOMKilled`, restart count 증가, Ready 복귀로 한다. 로컬 Compose에서는 이 버튼이 의도적으로 비활성화된다.
 

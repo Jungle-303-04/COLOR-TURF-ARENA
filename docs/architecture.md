@@ -8,6 +8,7 @@ flowchart LR
         Player["/play/:roomCode\nCanvas + joystick"]
         Watch["/watch/:roomCode\nvenue spectator"]
         Admin["/admin\ntoken-protected control"]
+        Ops["/ops\nobservability dashboard"]
         Bot["Bot Runner\nreal Socket.IO protocol"]
     end
 
@@ -32,6 +33,7 @@ flowchart LR
     Player --> SPA
     Watch --> SPA
     Admin --> SPA
+    Ops --> SPA
     SPA --> REST
     SPA <--> Socket
     Bot <--> Socket

@@ -6,6 +6,7 @@ metadata:
     {{- include "color-turf.labels" . | nindent 4 }}
     app.kubernetes.io/component: game-server
     color-turf/release-channel: stable
+    color-turf/metrics-target: stable
 spec:
   # Socket.IO gateways share rooms through Redis and forward mutations to the
   # lease owner. Do not pin a client IP: separate connections must spread over
@@ -71,6 +72,7 @@ metadata:
     {{- include "color-turf.labels" . | nindent 4 }}
     app.kubernetes.io/component: game-server
     color-turf/release-channel: canary
+    color-turf/metrics-target: canary
 spec:
   # Keep the Canary route resolvable before a Canary Deployment exists.
   # Enabling Canary switches this selector to the isolated Canary Pods.

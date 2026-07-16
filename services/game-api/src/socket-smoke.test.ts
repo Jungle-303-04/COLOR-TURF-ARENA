@@ -192,6 +192,18 @@ describe("two-client Socket.IO and protected operations flow", () => {
 
     const config = await (await fetch(`${running.url}/api/config`)).json() as { tickRateHz: number };
     expect(config.tickRateHz).toBe(30);
+    const readiness = await (await fetch(`${running.url}/readyz`)).json() as {
+      status: string;
+      storageReady: boolean;
+      gameLoopReady: boolean;
+      configReady: boolean;
+    };
+    expect(readiness).toMatchObject({
+      status: "ready",
+      storageReady: true,
+      gameLoopReady: true,
+      configReady: true,
+    });
 
     expect((await fetch(`${running.url}/api/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
     const createResponse = await fetch(`${running.url}/api/rooms`, {
@@ -286,14 +298,26 @@ describe("two-client Socket.IO and protected operations flow", () => {
 
     first.emit("client_rtt", { rttMs: 42.5 });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const ops = await (await fetch(`${running.url}/api/ops`)).json() as { server: { metrics: { websocketRttP95Ms: number } } };
+    const ops = await (await fetch(`${running.url}/api/ops`)).json() as {
+      server: { metrics: { websocketRttP95Ms: number } };
+      rooms: Array<{ connectedTeamPlayers: Record<"A" | "B", number> }>;
+    };
     expect(ops.server.metrics.websocketRttP95Ms).toBe(42.5);
+    expect(ops.rooms[0]?.connectedTeamPlayers).toEqual({ A: 1, B: 1 });
 
     const metrics = await (await fetch(`${running.url}/metrics`)).text();
     expect(metrics).toContain("game_tick_duration_seconds");
     expect(metrics).toContain("game_state_payload_bytes");
     expect(metrics).toContain("game_snapshot_save_duration_seconds");
     expect(metrics).toContain("game_ops_events_total");
+
+    const disconnectedTeam = joinOne.player?.team;
+    first.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const afterDisconnect = await (await fetch(`${running.url}/api/ops`)).json() as {
+      rooms: Array<{ connectedTeamPlayers: Record<"A" | "B", number> }>;
+    };
+    expect(afterDisconnect.rooms[0]?.connectedTeamPlayers[disconnectedTeam ?? "A"]).toBe(0);
   }, 20_000);
 
   it("reports the elapsed age of the last successful room snapshot", async () => {

@@ -502,7 +502,7 @@ select, textarea { font: inherit; }
 .service-metric-grid > div { min-width: 0; padding: .7rem; border: 1px solid var(--line); border-radius: .5rem; background: rgba(0,0,0,.18); }
 .service-metric-grid span { display: block; color: var(--dim); font-size: .45rem; font-weight: 900; letter-spacing: .08em; }
 .service-metric-grid strong { display: block; margin-top: .22rem; overflow: hidden; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
-.ops-health-strip { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: .45rem; margin: .8rem 0; }
+.ops-health-strip { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: .45rem; margin: .8rem 0; }
 .ops-health-strip > div { min-width: 0; padding: .62rem; border: 1px solid rgba(147,255,79,.13); border-radius: .48rem; background: rgba(147,255,79,.025); }
 .ops-health-strip span { display: block; color: var(--dim); font-size: .4rem; font-weight: 900; letter-spacing: .07em; }
 .ops-health-strip strong { display: block; margin-top: .18rem; overflow: hidden; color: #e9ffdc; font: 850 .68rem ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -593,7 +593,7 @@ select, textarea { font: inherit; }
 .ops-summary-panel, .infrastructure-panel { padding: 1rem; margin-top: .8rem; }
 .ops-summary-panel { order: 0; }
 .infrastructure-panel { order: 3; }
-.ops-kpi-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .55rem; margin-top: .8rem; }
+.ops-kpi-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .55rem; margin-top: .8rem; }
 .ops-kpi-card { --metric-tone: var(--lime); min-width: 0; display: grid; gap: .52rem; padding: .78rem; border: 1px solid color-mix(in srgb, var(--metric-tone) 24%, var(--line)); border-radius: .62rem; background: linear-gradient(145deg, color-mix(in srgb, var(--metric-tone) 7%, transparent), rgba(0,0,0,.22)); }
 .ops-kpi-card.tone-warning { --metric-tone: var(--amber); }
 .ops-kpi-card.tone-danger { --metric-tone: var(--red); }
@@ -670,7 +670,7 @@ select, textarea { font: inherit; }
 .joystick-live-info > span { min-width: 0; display: grid; gap: .08rem; padding: .38rem; border: 1px solid rgba(255,255,255,.08); border-radius: .34rem; background: rgba(0,0,0,.16); }
 .joystick-live-info small { color: var(--dim); font-size: .36rem; font-weight: 900; letter-spacing: .08em; }
 .joystick-live-info b { overflow: hidden; color: #dfe1ea; font: 800 .46rem ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.mobile-server-strip { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: .45rem; background: var(--line); }
+.mobile-server-strip { display: grid; grid-template-columns: repeat(5,1fr); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: .45rem; background: var(--line); }
 .mobile-server-strip span { padding: .48rem .25rem; color: #c8cad4; background: #0c0e17; text-align: center; font: 800 .48rem ui-monospace, monospace; }
 .reconnect-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-content: center; justify-items: center; padding: 2rem; background: rgba(7,8,14,.92); text-align: center; backdrop-filter: blur(8px); }
 .reconnect-overlay h2 { margin: 1rem 0 .35rem; font-size: 1.1rem; }
@@ -689,6 +689,16 @@ select, textarea { font: inherit; }
 .watch-timeline time { color: var(--dim); font: .46rem ui-monospace, monospace; }
 .watch-timeline b { display: block; font-size: .52rem; }
 .watch-timeline p { margin: .08rem 0 0; color: var(--muted); font-size: .46rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-player-roster { width: min(24rem, 34vw); position: absolute; left: .7rem; bottom: .7rem; z-index: 4; display: grid; gap: .4rem; padding: .6rem; border: 1px solid rgba(255,255,255,.12); border-radius: .5rem; background: rgba(8,9,15,.84); backdrop-filter: blur(7px); }
+.watch-player-roster > span { color: var(--dim); font-size: .46rem; font-weight: 900; letter-spacing: .1em; }
+.watch-player-roster > div { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: .28rem; }
+.watch-player-roster [role="listitem"] { min-width: 0; display: grid; grid-template-columns: .42rem minmax(0,1fr); align-items: center; column-gap: .35rem; padding: .28rem .35rem; border: 1px solid rgba(255,255,255,.07); border-radius: .32rem; background: rgba(255,255,255,.025); }
+.watch-player-roster [role="listitem"] > i { width: .42rem; height: .42rem; grid-row: 1 / 3; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+.watch-player-roster b, .watch-player-roster small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-player-roster b { font-size: .5rem; }
+.watch-player-roster small { color: var(--dim); font-size: .38rem; }
+.watch-player-roster .is-disconnected { opacity: .42; }
+.watch-player-roster > em { color: var(--dim); font-size: .4rem; font-style: normal; text-align: right; }
 .watch-event-toast { position: absolute; left: 50%; top: 1rem; z-index: 5; padding: .65rem 1.2rem; transform: translateX(-50%); border: 1px solid rgba(255,204,77,.5); border-radius: .55rem; color: #100d04; background: var(--amber); text-align: center; box-shadow: 0 0 40px rgba(255,204,77,.28); }
 .watch-event-toast b, .watch-event-toast span { display: block; }
 .watch-event-toast b { font-size: .8rem; }
@@ -743,7 +753,7 @@ select, textarea { font: inherit; }
   .virtual-joystick { width: 9rem; height: 9rem; }
   .mobile-arena-hud { width: calc(100% - 8.6rem); }
   .player-minimap { width: 7.4rem; }
-  .watch-timeline { display: none; }
+  .watch-timeline, .watch-player-roster { display: none; }
   .degraded-chip, .fullscreen-button { display: none; }
 }
 

@@ -2,6 +2,7 @@ import type { PlayerPublic, RoomSnapshot, TeamId, Vector2 } from "@paint-arena/s
 
 export const DEFAULT_CAMERA_SIZE = 72;
 export const POSITION_INTERPOLATION_MS = 1000 / 30;
+export const DEFAULT_WORLD_LABEL_LIMIT = 18;
 
 /*
  * Canvas responsibility pattern adapted from over-engineer/Socket.io-whiteboard
@@ -13,6 +14,8 @@ export interface ArenaCanvasOptions {
   mode?: "full" | "follow" | "minimap";
   viewportWidthCells?: number;
   viewportHeightCells?: number;
+  showPlayerLabels?: boolean;
+  maxPlayerLabels?: number;
 }
 
 export interface CameraViewport {
@@ -30,7 +33,81 @@ export interface CanvasFit {
   offsetY: number;
 }
 
+export interface PlayerLabelBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+export interface PlayerLabelPlacement {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface PlayerLabelPlacementInput {
+  centerX: number;
+  centerY: number;
+  radius: number;
+  labelWidth: number;
+  offsetX: number;
+  offsetY: number;
+  renderWidth: number;
+  renderHeight: number;
+}
+
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
+
+const playerLabelPriority = (player: PlayerPublic) => {
+  if (!player.isBot && player.connected) return 0;
+  if (!player.isBot) return 1;
+  if (player.connected) return 2;
+  return 3;
+};
+
+export const selectWorldLabelPlayers = (players: PlayerPublic[], limit = DEFAULT_WORLD_LABEL_LIMIT): PlayerPublic[] => {
+  const safeLimit = Math.max(0, Math.floor(limit));
+  return [...players]
+    .sort((left, right) => playerLabelPriority(left) - playerLabelPriority(right)
+      || left.nickname.localeCompare(right.nickname)
+      || left.id.localeCompare(right.id))
+    .slice(0, safeLimit);
+};
+
+const overlapsLabel = (bounds: PlayerLabelBounds, occupied: PlayerLabelBounds[]) => occupied.some((other) =>
+  bounds.left < other.right + 2
+  && bounds.right + 2 > other.left
+  && bounds.top < other.bottom + 2
+  && bounds.bottom + 2 > other.top);
+
+export const getWorldPlayerLabelPlacement = (
+  input: PlayerLabelPlacementInput,
+  occupied: PlayerLabelBounds[] = [],
+): PlayerLabelPlacement | null => {
+  const horizontalPadding = 5;
+  const stagePadding = 3;
+  const width = input.labelWidth + horizontalPadding * 2;
+  const height = 16;
+  if (width > input.renderWidth - stagePadding * 2 || height > input.renderHeight - stagePadding * 2) return null;
+
+  const minimumLeft = input.offsetX + stagePadding;
+  const maximumLeft = input.offsetX + input.renderWidth - width - stagePadding;
+  const left = clamp(input.centerX - width / 2, minimumLeft, maximumLeft);
+  const candidates = [
+    input.centerY - input.radius - height - 5,
+    input.centerY + input.radius + 5,
+  ];
+
+  for (const top of candidates) {
+    const bounds = { left, top, right: left + width, bottom: top + height };
+    const withinStage = bounds.top >= input.offsetY + stagePadding
+      && bounds.bottom <= input.offsetY + input.renderHeight - stagePadding;
+    if (withinStage && !overlapsLabel(bounds, occupied)) return { left, top, width, height };
+  }
+  return null;
+};
 
 export const interpolatePosition = (from: Vector2, to: Vector2, progress: number): Vector2 => {
   const amount = clamp(progress, 0, 1);
@@ -76,6 +153,8 @@ export class ArenaCanvasRenderer {
   private readonly mode: NonNullable<ArenaCanvasOptions["mode"]>;
   private readonly viewportWidthCells: number;
   private readonly viewportHeightCells: number;
+  private readonly showPlayerLabels: boolean;
+  private readonly maxPlayerLabels: number;
   private snapshot: RoomSnapshot | null = null;
   private focusPlayerId: string | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -92,6 +171,8 @@ export class ArenaCanvasRenderer {
     this.mode = options.mode ?? "full";
     this.viewportWidthCells = Math.max(24, options.viewportWidthCells ?? DEFAULT_CAMERA_SIZE);
     this.viewportHeightCells = Math.max(14, options.viewportHeightCells ?? DEFAULT_CAMERA_SIZE);
+    this.showPlayerLabels = options.showPlayerLabels ?? false;
+    this.maxPlayerLabels = Math.max(0, Math.floor(options.maxPlayerLabels ?? DEFAULT_WORLD_LABEL_LIMIT));
     this.resizeObserver = new ResizeObserver(() => this.draw());
     this.resizeObserver.observe(canvas);
   }
@@ -246,6 +327,55 @@ export class ArenaCanvasRenderer {
         ctx.fillText(label, labelCenterX, labelBaselineY);
       }
       ctx.restore();
+    }
+
+    if (this.mode === "full" && this.showPlayerLabels) {
+      const occupiedLabels: PlayerLabelBounds[] = [];
+      const labelPlayers = selectWorldLabelPlayers(snapshot.players, this.maxPlayerLabels);
+      const fontSize = clamp(renderWidth / 72, 8, 11);
+      for (const player of labelPlayers) {
+        const renderPosition = renderPositions.get(player.id) ?? player.position;
+        if (renderPosition.x < viewport.left - 1 || renderPosition.x > viewport.left + viewport.width + 1 || renderPosition.y < viewport.top - 1 || renderPosition.y > viewport.top + viewport.height + 1) continue;
+        const centerX = toCanvasX(renderPosition.x);
+        const centerY = toCanvasY(renderPosition.y);
+        const radius = Math.max(4, Math.min(renderWidth / 60, 12));
+        const nicknameCharacters = Array.from(player.nickname);
+        const label = nicknameCharacters.length > 18 ? `${nicknameCharacters.slice(0, 17).join("")}…` : player.nickname;
+        ctx.save();
+        ctx.font = `850 ${fontSize}px ui-monospace, monospace`;
+        const placement = getWorldPlayerLabelPlacement({
+          centerX,
+          centerY,
+          radius,
+          labelWidth: ctx.measureText(label).width,
+          offsetX,
+          offsetY,
+          renderWidth,
+          renderHeight,
+        }, occupiedLabels);
+        if (!placement) {
+          ctx.restore();
+          continue;
+        }
+        occupiedLabels.push({
+          left: placement.left,
+          top: placement.top,
+          right: placement.left + placement.width,
+          bottom: placement.top + placement.height,
+        });
+        const team = teams[player.team as TeamId];
+        ctx.globalAlpha = player.connected ? 1 : 0.48;
+        ctx.fillStyle = "rgba(5,6,11,.86)";
+        ctx.fillRect(placement.left, placement.top, placement.width, placement.height);
+        ctx.strokeStyle = team.color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(placement.left + 0.5, placement.top + 0.5, placement.width - 1, placement.height - 1);
+        ctx.fillStyle = player.connected ? "#ffffff" : team.color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, placement.left + placement.width / 2, placement.top + placement.height / 2 + 0.5);
+        ctx.restore();
+      }
     }
 
     if (this.mode === "minimap" && focus) {

@@ -34,6 +34,8 @@ interface OpsHistorySample {
   cpu: number;
   rejectRate: number;
   payload: number;
+  clientFps: number;
+  clientFrameDrop: number;
 }
 
 type AdminTab = "overview" | "controls" | "metrics";
@@ -175,6 +177,8 @@ export const AdminPage = () => {
       cpu: snapshot.server.metrics.cpuPercent,
       rejectRate: snapshot.server.metrics.inputRejectRate,
       payload: snapshot.server.metrics.statePayloadBytes / 1024,
+      clientFps: snapshot.server.metrics.clientTelemetryClients > 0 ? snapshot.server.metrics.clientFpsP10 : Number.NaN,
+      clientFrameDrop: snapshot.server.metrics.clientTelemetryClients > 0 ? snapshot.server.metrics.clientFrameDropP95Percent : Number.NaN,
     };
     setMetricHistory((current) => {
       if (!Number.isFinite(sample.at)) return current;
@@ -348,7 +352,7 @@ export const AdminPage = () => {
 
   useEffect(() => {
     if (!isArenaModalOpen || !room || !modalCanvasRef.current) return;
-    const renderer = new ArenaCanvasRenderer(modalCanvasRef.current);
+    const renderer = new ArenaCanvasRenderer(modalCanvasRef.current, { showPlayerLabels: true, maxPlayerLabels: 24 });
     modalRendererRef.current = renderer;
     renderer.update(room);
     return () => {
@@ -458,10 +462,15 @@ export const AdminPage = () => {
   const inputLatencyP95Ms = ops?.server.inputLatencyP95Ms ?? 0;
   const eventLoopLagP95Ms = ops?.server.metrics.eventLoopLagP95Ms ?? 0;
   const cpuPercent = ops?.server.metrics.cpuPercent ?? 0;
+  const clientTelemetryClients = ops?.server.metrics.clientTelemetryClients ?? 0;
+  const clientFpsP10 = ops?.server.metrics.clientFpsP10 ?? 0;
+  const clientFrameDropP95Percent = ops?.server.metrics.clientFrameDropP95Percent ?? 0;
   const tickUtilization = tickP95Ms / tickBudgetMs;
   const inputLatencyUtilization = inputLatencyP95Ms / 100;
   const eventLoopUtilization = eventLoopLagP95Ms / 50;
   const cpuUtilization = cpuPercent / 80;
+  const clientFpsUtilization = clientTelemetryClients === 0 ? 0 : clientFpsP10 < 45 ? 1.1 : clientFpsP10 < 55 ? .8 : .3;
+  const clientFrameDropUtilization = clientTelemetryClients === 0 ? 0 : clientFrameDropP95Percent / 10;
 
   if (!authorized) return <div className="admin-login-page"><div className="admin-login-card"><span className="panel-kicker">관리자 전용 운영</span><h1>컬러 터프 관리실</h1><p>게임·봇·장애 시연 API는 관리자 토큰으로 보호됩니다.</p><label><span>관리자 토큰</span><input type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void login(); }} placeholder="demo-admin" /></label><button type="button" className="button button-primary button-block" onClick={() => void login()}>관리자 화면 열기</button>{error && <div className="notice-bar notice-error">{error}</div>}</div></div>;
 
@@ -529,12 +538,14 @@ export const AdminPage = () => {
           </div>
 
           <section className="panel ops-summary-panel">
-            <div className="panel-heading"><div><span className="panel-kicker">한눈에 보는 상태</span><h2>게임 서버 성능 여유</h2></div><span className="actual-tag">{ops?.server.identity.releaseChannel.toUpperCase() ?? "—"} · 실측 120초</span></div>
+            <div className="panel-heading"><div><span className="panel-kicker">한눈에 보는 상태</span><h2>게임·화면 성능 여유</h2></div><span className="actual-tag">{ops?.server.identity.releaseChannel.toUpperCase() ?? "—"} · 최근 최대 120초</span></div>
             <div className="ops-kpi-grid">
               <MetricKpi label="게임 틱 P95" value={`${formatNumber(tickP95Ms, 1)}ms`} description="최근 Tick 처리시간의 95백분위다. 30Hz에서는 한 Tick이 약 33.3ms 안에 끝나야 다음 판정을 제시간에 수행한다." source="/api/ops → server.metrics.tickP95Ms · GameRoom.tick() 실행시간" threshold={`Tick 예산 ${formatNumber(tickBudgetMs, 1)}ms`} utilization={tickUtilization} tone={metricTone(tickUtilization)} />
               <MetricKpi label="입력 지연 P95" value={`${formatNumber(inputLatencyP95Ms, 1)}ms`} description="휴대폰이 기록한 전송 시각부터 서버가 입력을 검증할 때까지 걸린 시간의 95백분위다." source="/api/ops → server.inputLatencyP95Ms · player_input.sentAt" threshold="주의 70ms · 위험 100ms" utilization={inputLatencyUtilization} tone={metricTone(inputLatencyUtilization)} />
               <MetricKpi label="이벤트 루프 P95" value={`${formatNumber(eventLoopLagP95Ms, 1)}ms`} description="Node.js 이벤트 루프가 다른 작업 때문에 제시간에 실행되지 못한 지연의 95백분위다." source="/api/ops → server.metrics.eventLoopLagP95Ms · monitorEventLoopDelay" threshold="주의 35ms · 위험 50ms" utilization={eventLoopUtilization} tone={metricTone(eventLoopUtilization)} />
               <MetricKpi label="CPU 사용률" value={`${formatNumber(cpuPercent, 1)}%`} description="게임 서버 프로세스가 최근 관측 구간에 사용한 CPU 시간 비율이다." source="/api/ops → server.metrics.cpuPercent · process.cpuUsage()" threshold="주의 56% · 위험 80%" utilization={cpuUtilization} tone={metricTone(cpuUtilization)} />
+              <MetricKpi label="게임 화면 FPS P10" value={clientTelemetryClients > 0 ? `${formatNumber(clientFpsP10, 1)}fps` : "표본 대기"} description="연결된 플레이·관전 브라우저가 requestAnimationFrame으로 직접 잰 FPS 중 하위 10% 값이다. 서버 Tick과 다른 실제 화면 부드러움 지표다." source="/api/ops → server.metrics.clientFpsP10 · 브라우저 requestAnimationFrame → client_render_stats" threshold={`${clientTelemetryClients}개 화면 실측 · 정상 55fps 이상`} utilization={clientFpsUtilization} tone={metricTone(clientFpsUtilization)} />
+              <MetricKpi label="프레임 누락 P95" value={clientTelemetryClients > 0 ? `${formatNumber(clientFrameDropP95Percent, 1)}%` : "표본 대기"} description="60fps 기준 프레임 간격보다 길어진 requestAnimationFrame 구간에서 추정한 누락률의 95백분위다." source="/api/ops → server.metrics.clientFrameDropP95Percent · 브라우저 rAF 간격 기반 추정" threshold="주의 7% · 위험 10%" utilization={clientFrameDropUtilization} tone={metricTone(clientFrameDropUtilization)} />
             </div>
           </section>
 
@@ -544,6 +555,9 @@ export const AdminPage = () => {
             <div><MetricLabel label="게임 틱 P95" description="최근 게임 Tick 처리시간 표본의 95백분위다." source="/api/ops → server.metrics.tickP95Ms" /><strong>{formatNumber(tickP95Ms, 1)}ms</strong></div>
             <div><MetricLabel label="전송 P95" description="상태 Snapshot 또는 Delta를 직렬화하고 전송 요청하는 처리시간의 95백분위다." source="/api/ops → server.metrics.broadcastP95Ms" /><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div>
             <div><MetricLabel label="왕복 지연 P95" description="브라우저가 Socket ping을 보내고 ACK를 받을 때까지 직접 측정해 서버에 보고한 실제 왕복시간의 95백분위다." source="/api/ops → server.metrics.websocketRttP95Ms · client_ping ACK → client_rtt.rttMs" /><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div>
+            <div><MetricLabel label="게임 화면 FPS P10" description="최근 플레이·관전 브라우저의 실제 화면 FPS 중 하위 10% 값이다." source="/api/ops → server.metrics.clientFpsP10 · requestAnimationFrame" /><strong>{clientTelemetryClients > 0 ? `${formatNumber(clientFpsP10, 1)}fps` : "—"}</strong></div>
+            <div><MetricLabel label="화면 프레임 P95" description="플레이·관전 브라우저가 관측한 프레임 간격의 95백분위다." source="/api/ops → server.metrics.clientFrameTimeP95Ms · requestAnimationFrame 간격" /><strong>{clientTelemetryClients > 0 ? `${formatNumber(ops?.server.metrics.clientFrameTimeP95Ms ?? 0, 1)}ms` : "—"}</strong></div>
+            <div><MetricLabel label="화면 표본" description="최근 5초 안에 렌더 성능을 보고한 플레이·관전 브라우저 수다." source="/api/ops → server.metrics.clientTelemetryClients · 활성 client_render_stats 송신자" /><strong>{clientTelemetryClients}개</strong></div>
             <div><MetricLabel label="상태 크기 P95" description="최근 Snapshot 또는 Delta JSON payload 크기의 95백분위다." source="/api/ops → server.metrics.statePayloadBytes · Buffer.byteLength" /><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div>
             <div><MetricLabel label="스냅샷 경과" description="가장 최근 Redis Snapshot 저장 이후 흐른 시간이다." source="/api/ops → server.metrics.snapshotAgeSeconds" /><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div>
             <div><MetricLabel label="RSS 메모리" description="힙과 네이티브 메모리를 포함한 게임 서버 프로세스의 실제 상주 메모리다." source="/api/ops → server.metrics.memoryRssMb · process.memoryUsage().rss" /><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
@@ -565,6 +579,8 @@ export const AdminPage = () => {
               <div><MetricLabel label="재접속" description="서버 시작 이후 같은 세션으로 복구된 Socket.IO 재접속 누적 횟수다." source="/api/ops → server.reconnects" /><strong>{formatNumber(ops?.server.reconnects ?? 0)}</strong></div>
               <div><MetricLabel label="연결 끊김" description="서버 시작 이후 관측한 Socket.IO disconnect 누적 횟수다." source="/api/ops → server.disconnects" /><strong>{formatNumber(ops?.server.disconnects ?? 0)}</strong></div>
               <div><MetricLabel label="가동 시간" description="현재 game-api 프로세스가 시작된 이후 경과한 시간이다." source="/api/ops → server.uptimeSeconds · process.uptime()" /><strong>{formatNumber(ops?.server.uptimeSeconds ?? 0)}초</strong></div>
+              <div><MetricLabel label="게임 화면 FPS" description="플레이·관전 브라우저의 실제 FPS 하위 10% 값이다." source="/api/ops → server.metrics.clientFpsP10" /><strong>{clientTelemetryClients > 0 ? formatNumber(clientFpsP10, 1) : "—"}</strong></div>
+              <div><MetricLabel label="프레임 누락" description="60fps 기준 requestAnimationFrame 간격으로 추정한 누락률 P95다." source="/api/ops → server.metrics.clientFrameDropP95Percent" /><strong>{clientTelemetryClients > 0 ? `${formatNumber(clientFrameDropP95Percent, 1)}%` : "—"}</strong></div>
             </div>
             <div className="metric-chart-grid">
               <MetricChart title="입력 처리량" unit="/초" description="플레이어 이동 입력 처리량" source="/api/ops → server.inputEventsPerSecond" color="#93ff4f" points={chartPoints((sample) => sample.inputRate)} decimals={0} />
@@ -575,6 +591,8 @@ export const AdminPage = () => {
               <MetricChart title="CPU 사용률" unit="%" description="게임 서버 프로세스 CPU" source="/api/ops → server.metrics.cpuPercent" color="#51e2c2" points={chartPoints((sample) => sample.cpu)} decimals={1} />
               <MetricChart title="RSS 메모리" unit="MB" description="게임 서버 실제 상주 메모리" source="/api/ops → server.metrics.memoryRssMb" color="#f28ac7" points={chartPoints((sample) => sample.memory)} decimals={1} />
               <MetricChart title="상태 전송 크기 P95" unit="KB" description="클라이언트 상태 전송 크기" source="/api/ops → server.metrics.statePayloadBytes" color="#9eb5ff" points={chartPoints((sample) => sample.payload)} decimals={1} />
+              <MetricChart title="게임 화면 FPS P10" unit="fps" description="플레이·관전 브라우저 실제 FPS 하위 10%" source="/api/ops → server.metrics.clientFpsP10 · requestAnimationFrame" color="#7dffdc" points={chartPoints((sample) => sample.clientFps)} decimals={1} />
+              <MetricChart title="프레임 누락률 P95" unit="%" description="60fps 기준 브라우저 프레임 누락 추정치" source="/api/ops → server.metrics.clientFrameDropP95Percent" color="#ff7e67" points={chartPoints((sample) => sample.clientFrameDrop)} decimals={1} />
             </div>
           </section>
 

@@ -66,6 +66,9 @@ test("admin, player and spectator complete the live browser flow", async ({ brow
     await player.getByRole("button", { name: "JOIN ARENA" }).click();
     await expect(player.locator(".hud-team em")).toHaveText("브라우저-E2E");
     await expect(player.locator(".connection-chip")).toContainText("CONNECTED");
+    const mobileCanvasBox = await player.locator(".mobile-arena-canvas").boundingBox();
+    expect(mobileCanvasBox).not.toBeNull();
+    expect(Math.abs((mobileCanvasBox?.width ?? 0) - (mobileCanvasBox?.height ?? 0))).toBeLessThanOrEqual(1);
     const assignedTeam = (await player.locator(".hud-team > i").innerText()).trim() as "A" | "B";
     expect(["A", "B"]).toContain(assignedTeam);
 
@@ -78,6 +81,7 @@ test("admin, player and spectator complete the live browser flow", async ({ brow
     await admin.getByRole("button", { name: "게임 시작", exact: true }).click();
     await expect(player.locator(".hud-clock small")).toHaveText("RUNNING");
     await expect(spectator.locator(".match-clock")).toContainText("LIVE");
+    await expect(spectator.getByRole("complementary", { name: "실시간 참가자 닉네임" }).getByText("브라우저-E2E", { exact: true })).toBeVisible();
 
     const watchedTeamScore = spectator.locator(assignedTeam === "A" ? ".team-score-a strong" : ".team-score-b strong");
     const scoreBeforeMove = await numericText(watchedTeamScore);
@@ -119,6 +123,20 @@ test("admin, player and spectator complete the live browser flow", async ({ brow
     expect(sessionAfterReconnect?.team).toBe(sessionBeforeOffline?.team);
     expect(sessionAfterReconnect?.lastReceivedSequence ?? 0)
       .toBeGreaterThanOrEqual(sessionBeforeOffline?.lastReceivedSequence ?? 0);
+
+    await admin.getByRole("tab", { name: /운영 지표/ }).click();
+    const fpsKpi = admin.locator(".ops-kpi-card").filter({ hasText: "게임 화면 FPS P10" });
+    await expect(fpsKpi).not.toContainText("표본 대기", { timeout: 10_000 });
+    await expect(fpsKpi).toContainText("fps");
+    await expect(admin.locator(".metric-chart-card").filter({ hasText: "프레임 누락률 P95" })).toBeVisible();
+
+    if (process.env.E2E_CAPTURE_EVIDENCE === "true") {
+      await Promise.all([
+        admin.screenshot({ path: "docs/evidence/screenshots/admin-client-render-metrics.png", fullPage: true, animations: "disabled" }),
+        player.screenshot({ path: "docs/evidence/screenshots/join-mobile-square-fps.png", fullPage: true, animations: "disabled" }),
+        spectator.screenshot({ path: "docs/evidence/screenshots/watch-player-nicknames.png", fullPage: true, animations: "disabled" }),
+      ]);
+    }
   } finally {
     await closeContexts(contexts);
   }
