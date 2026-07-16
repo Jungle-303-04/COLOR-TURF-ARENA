@@ -22,6 +22,9 @@ spec:
         color-turf/cluster-role: {{ .Values.server.clusterName | quote }}
     spec:
       priorityClassName: {{ .Values.priorityClass.name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.bot.podSecurityContext | nindent 8 }}
       containers:
         - name: bot
           image: "{{ .Values.bot.image.repository }}:{{ .Values.bot.image.tag }}"
@@ -30,4 +33,6 @@ spec:
           resources:
             requests: { cpu: 25m, memory: 32Mi }
             limits: { cpu: 300m, memory: 128Mi }
+          securityContext:
+            {{- toYaml .Values.bot.containerSecurityContext | nindent 12 }}
 {{- end }}

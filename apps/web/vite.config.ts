@@ -12,6 +12,10 @@ export default defineConfig({
       "/healthz": "http://127.0.0.1:3001",
       "/readyz": "http://127.0.0.1:3001",
       "/metrics": "http://127.0.0.1:3001",
+      "/socket/canary": {
+        target: "http://127.0.0.1:3002",
+        ws: true,
+      },
       "/socket.io": {
         target: "http://127.0.0.1:3001",
         ws: true,
@@ -22,4 +26,3 @@ export default defineConfig({
     sourcemap: true,
   },
 });
-

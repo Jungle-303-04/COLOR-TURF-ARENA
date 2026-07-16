@@ -30,6 +30,8 @@ spec:
       priorityClassName: {{ .Values.priorityClass.name }}
       serviceAccountName: {{ include "color-turf.fullname" . }}
       terminationGracePeriodSeconds: 20
+      securityContext:
+        {{- toYaml .Values.server.podSecurityContext | nindent 8 }}
       containers:
         - name: server
           image: {{ include "color-turf.serverImage" . | quote }}
@@ -44,6 +46,10 @@ spec:
             - { name: RELEASE_CHANNEL, value: stable }
             - { name: BROADCAST_MODE, value: {{ .Values.server.broadcastMode | quote }} }
             - { name: DEMO_TICK_DELAY_MS, value: {{ .Values.server.tickDelayMs | quote }} }
+            {{- if and .Values.canary.enabled (ne .Values.server.clusterName "dr") }}
+            - { name: CANARY_API_URL, value: "http://server-canary:3001" }
+            - { name: PARTITION_ROOMS_BY_RELEASE, value: "true" }
+            {{- end }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           livenessProbe:
@@ -60,3 +66,5 @@ spec:
               exec: { command: ["sh", "-c", "sleep 5"] }
           resources:
             {{- toYaml .Values.server.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.server.containerSecurityContext | nindent 12 }}

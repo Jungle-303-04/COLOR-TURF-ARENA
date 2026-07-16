@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InputPayload } from "@paint-arena/shared";
-import { GameRoom } from "./game.js";
+import { GameRoom, MAX_PLAYER_INPUTS_PER_SECOND } from "./game.js";
 
 const input = (roomCode: string, sessionId: string, sequence: number, sentAt: number, x: number, y: number): InputPayload => ({
   roomCode,
@@ -143,8 +143,10 @@ describe("GameRoom server authority", () => {
     expect(room.handleInput("session-limit", input("LIMIT", "session-limit", 1, now, 1, 0))).toEqual({ ok: true });
     expect(room.handleInput("session-limit", input("LIMIT", "session-limit", 1, now, 1, 0))).toEqual({ ok: false, reason: "duplicate" });
     expect(room.handleInput("session-limit", input("LIMIT", "session-limit", 2, now - 4000, 1, 0))).toEqual({ ok: false, reason: "stale" });
-    for (let sequence = 2; sequence <= 20; sequence += 1) expect(room.handleInput("session-limit", input("LIMIT", "session-limit", sequence, now, 0, 1)).ok).toBe(true);
-    expect(room.handleInput("session-limit", input("LIMIT", "session-limit", 21, now, 0, 1))).toEqual({ ok: false, reason: "rate-limited" });
+    for (let sequence = 2; sequence <= MAX_PLAYER_INPUTS_PER_SECOND; sequence += 1) {
+      expect(room.handleInput("session-limit", input("LIMIT", "session-limit", sequence, now, 0, 1)).ok).toBe(true);
+    }
+    expect(room.handleInput("session-limit", input("LIMIT", "session-limit", MAX_PLAYER_INPUTS_PER_SECOND + 1, now, 0, 1))).toEqual({ ok: false, reason: "rate-limited" });
   });
 
   it("ends on the authoritative deadline and resolves a winner or draw", () => {

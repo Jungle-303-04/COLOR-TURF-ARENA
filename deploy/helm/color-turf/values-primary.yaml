@@ -15,7 +15,7 @@ web:
     digest: sha256:1c9485b9046faf01d0a0a2b34287b61b306cfc36692ae58723ab52282e8842ab
 
 chaos:
-  allowPodOom: true
+  allowPodOom: false
 
 opsiaRecovery:
   enabled: true
@@ -27,4 +27,4 @@ canary:
   enabled: false
 
 auth:
-  demoAdminAuthDisabled: true
+  demoAdminAuthDisabled: false

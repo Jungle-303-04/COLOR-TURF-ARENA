@@ -3,6 +3,26 @@ import type { RoomSnapshot, RoomSummary, ServerIdentity, StateDelta } from "@pai
 
 const durationBuckets = [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1];
 
+export interface SnapshotAgeSample {
+  roomCode: string;
+  cluster: string;
+  ageSeconds: number;
+}
+
+export interface ClientRenderMetricSummary {
+  fpsP10: number;
+  frameTimeP95Ms: number;
+  frameDropP95Percent: number;
+  clients: number;
+}
+
+const emptyClientRenderMetricSummary = (): ClientRenderMetricSummary => ({
+  fpsP10: 0,
+  frameTimeP95Ms: 0,
+  frameDropP95Percent: 0,
+  clients: 0,
+});
+
 export const createMetrics = () => {
   const register = new Registry();
   register.setDefaultLabels({ service: "color-turf-game-server" });
@@ -98,8 +118,38 @@ export const createMetrics = () => {
     labelNames: ["result"] as const,
     registers: [register],
   });
+  const gameClientRenderFpsP10 = new Gauge({
+    name: "game_client_render_fps_p10",
+    help: "10th percentile of recent browser render frames per second",
+    labelNames: ["version", "cluster", "release_channel"] as const,
+    registers: [register],
+  });
+  const gameClientRenderFrameTimeP95 = new Gauge({
+    name: "game_client_render_frame_time_p95_seconds",
+    help: "95th percentile of browser-reported p95 render frame time",
+    labelNames: ["version", "cluster", "release_channel"] as const,
+    registers: [register],
+  });
+  const gameClientRenderFrameDropRatioP95 = new Gauge({
+    name: "game_client_render_frame_drop_ratio_p95",
+    help: "95th percentile of browser-reported dropped-frame ratio",
+    labelNames: ["version", "cluster", "release_channel"] as const,
+    registers: [register],
+  });
+  const gameClientRenderTelemetryClients = new Gauge({
+    name: "game_client_render_telemetry_clients",
+    help: "Connected browser sockets with a recent valid render telemetry sample",
+    labelNames: ["version", "cluster", "release_channel"] as const,
+    registers: [register],
+  });
 
-  const refresh = (identity: ServerIdentity, sockets: number, rooms: RoomSummary[]) => {
+  const refresh = (
+    identity: ServerIdentity,
+    sockets: number,
+    rooms: RoomSummary[],
+    snapshotAges: SnapshotAgeSample[] = [],
+    clientRender = emptyClientRenderMetricSummary(),
+  ) => {
     gameWebsocketConnections.reset();
     gameWebsocketConnections.set({
       version: identity.version,
@@ -118,9 +168,29 @@ export const createMetrics = () => {
           team,
           version: room.version,
           cluster: room.cluster,
-        }, room.teamPlayers[team]);
+        }, room.connectedTeamPlayers[team]);
       }
     }
+    gameSnapshotAge.reset();
+    for (const snapshot of snapshotAges) {
+      gameSnapshotAge.set({
+        room_id: snapshot.roomCode,
+        cluster: snapshot.cluster,
+      }, Math.max(0, snapshot.ageSeconds));
+    }
+    const renderLabels = {
+      version: identity.version,
+      cluster: identity.cluster,
+      release_channel: identity.releaseChannel,
+    };
+    gameClientRenderFpsP10.reset();
+    gameClientRenderFpsP10.set(renderLabels, clientRender.fpsP10);
+    gameClientRenderFrameTimeP95.reset();
+    gameClientRenderFrameTimeP95.set(renderLabels, clientRender.frameTimeP95Ms / 1000);
+    gameClientRenderFrameDropRatioP95.reset();
+    gameClientRenderFrameDropRatioP95.set(renderLabels, clientRender.frameDropP95Percent / 100);
+    gameClientRenderTelemetryClients.reset();
+    gameClientRenderTelemetryClients.set(renderLabels, clientRender.clients);
   };
 
   const observeTick = (snapshot: RoomSnapshot, seconds: number) => gameTickDuration.observe({
@@ -168,6 +238,10 @@ export const createMetrics = () => {
     gameChangedCells,
     gameOpsEvents,
     gameInputEvents,
+    gameClientRenderFpsP10,
+    gameClientRenderFrameTimeP95,
+    gameClientRenderFrameDropRatioP95,
+    gameClientRenderTelemetryClients,
     refresh,
     observeTick,
     observeBroadcast,

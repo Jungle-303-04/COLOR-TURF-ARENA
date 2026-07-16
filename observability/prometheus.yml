@@ -5,3 +5,11 @@ scrape_configs:
   - job_name: color-turf-stable
     static_configs:
       - targets: ["server-stable:3001"]
+
+  - job_name: color-turf-dr
+    static_configs:
+      - targets: ["server-dr:3001"]
+
+  - job_name: color-turf-canary
+    static_configs:
+      - targets: ["server-canary:3001"]

@@ -16,6 +16,7 @@ import {
 } from "@paint-arena/shared";
 
 export const DEFAULT_WORLD_SIZE = 216;
+export const MAX_PLAYER_INPUTS_PER_SECOND = 30;
 
 export const DEFAULT_GAME_CONFIG: GameConfig = {
   durationSeconds: 90,
@@ -423,7 +424,7 @@ export class GameRoom {
     const magnitude = Math.hypot(payload.direction.x, payload.direction.y);
     if (!Number.isFinite(magnitude) || magnitude > 1.05) return { ok: false, reason: "invalid-direction" };
     player.recentInputTimes = player.recentInputTimes.filter((time) => time > now - 1000);
-    if (player.recentInputTimes.length >= 20) return { ok: false, reason: "rate-limited" };
+    if (player.recentInputTimes.length >= MAX_PLAYER_INPUTS_PER_SECOND) return { ok: false, reason: "rate-limited" };
 
     player.lastSequence = payload.sequence;
     player.recentInputTimes.push(now);

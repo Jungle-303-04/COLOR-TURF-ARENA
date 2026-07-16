@@ -8,6 +8,8 @@ resources:
   - rbac.yaml
   - game-api-deployment.yaml
   - game-api-service.yaml
+  - game-api-dr-service.yaml
+  - game-api-canary-service.yaml
   - frontend-deployment.yaml
   - frontend-service.yaml
 labels:

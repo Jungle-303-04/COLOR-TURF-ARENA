@@ -30,6 +30,8 @@ spec:
       terminationGracePeriodSeconds: 20
       securityContext:
         runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -42,6 +44,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: paint-arena-config
+            - secretRef:
+                name: paint-arena-auth
           env:
             - name: PORT
               value: "3001"
@@ -82,5 +86,6 @@ spec:
                 command: ["sh", "-c", "sleep 5"]
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]

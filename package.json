@@ -13,13 +13,17 @@
     "dev": "npm run build -w @paint-arena/shared && concurrently -n api,web -c magenta,cyan \"npm run dev -w @paint-arena/game-api\" \"npm run dev -w @paint-arena/web\"",
     "start": "npm run start -w @paint-arena/game-api",
     "test": "npm run build -w @paint-arena/shared && npm run test -w @paint-arena/game-api && npm run test -w @paint-arena/web",
+    "test:e2e": "npm run build -w @paint-arena/shared && npm run build -w @paint-arena/game-api && playwright test",
+    "test:e2e:install": "playwright install chromium",
     "typecheck": "npm run typecheck -w @paint-arena/shared && npm run typecheck -w @paint-arena/game-api && npm run typecheck -w @paint-arena/bot && npm run typecheck -w @paint-arena/web",
-    "bot": "npm run dev -w @paint-arena/bot --"
+    "bot": "npm run dev -w @paint-arena/bot --",
+    "load:compare": "npm run --silent build -w @paint-arena/shared && npm run --silent build -w @paint-arena/game-api && node scripts/compare-broadcast-load.mjs"
   },
   "engines": {
     "node": ">=22.12"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3"
   }

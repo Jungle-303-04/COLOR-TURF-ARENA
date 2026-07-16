@@ -10,9 +10,28 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: game-server
-      color-turf/release-channel: stable
+      color-turf/metrics-target: stable
   endpoints:
     - port: http
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
+{{- if .Values.canary.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "color-turf.fullname" . }}-canary
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: game-server
+      color-turf/metrics-target: canary
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}
 {{- end }}

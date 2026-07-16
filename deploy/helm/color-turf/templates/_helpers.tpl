@@ -14,10 +14,10 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- end -}}
 
 {{- define "color-turf.authSecretName" -}}
-{{- if .Values.auth.existingSecret -}}
-{{- .Values.auth.existingSecret -}}
-{{- else if .Values.auth.create -}}
+{{- if .Values.auth.create -}}
 {{- printf "%s-auth" (include "color-turf.fullname" .) -}}
+{{- else if .Values.auth.existingSecret -}}
+{{- .Values.auth.existingSecret -}}
 {{- else -}}
 {{- required "auth.existingSecret is required when auth.create=false" .Values.auth.existingSecret -}}
 {{- end -}}

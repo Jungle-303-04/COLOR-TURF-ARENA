@@ -1,4 +1,5 @@
 import { createClient, type RedisClientType } from "redis";
+import type { EventLogEntry } from "@paint-arena/shared";
 import type { PersistedRoomState } from "./game.js";
 
 export interface SnapshotStorage {
@@ -11,6 +12,8 @@ export interface SnapshotStorage {
   loadAll(): Promise<PersistedRoomState[]>;
   activeRoomCode(): Promise<string | null>;
   activateSingleRoom(roomCode: string): Promise<void>;
+  appendEvent(entry: EventLogEntry): Promise<void>;
+  loadRecentEvents(limit?: number): Promise<EventLogEntry[]>;
   clearAll(): Promise<void>;
   acquireLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean>;
   renewLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean>;
@@ -19,11 +22,15 @@ export interface SnapshotStorage {
 
 const snapshotKey = (roomCode: string) => `color-turf:room:${roomCode.toUpperCase()}:snapshot`;
 const leaseKey = (roomCode: string) => `color-turf:room:${roomCode.toUpperCase()}:lease`;
+const opsEventsKey = "color-turf:ops:events";
+const MAX_RECENT_EVENTS = 200;
+const eventLimit = (limit: number): number => Math.max(0, Math.min(MAX_RECENT_EVENTS, Math.floor(limit)));
 
 export class MemorySnapshotStorage implements SnapshotStorage {
   readonly kind = "memory" as const;
   private readonly snapshots = new Map<string, string>();
   private readonly leases = new Map<string, { owner: string; expiresAt: number }>();
+  private readonly events: string[] = [];
   private ready = false;
 
   async connect(): Promise<void> { this.ready = true; }
@@ -53,9 +60,21 @@ export class MemorySnapshotStorage implements SnapshotStorage {
     for (const code of [...this.leases.keys()]) if (code !== keep) this.leases.delete(code);
   }
 
+  async appendEvent(entry: EventLogEntry): Promise<void> {
+    this.events.unshift(JSON.stringify(entry));
+    if (this.events.length > MAX_RECENT_EVENTS) this.events.length = MAX_RECENT_EVENTS;
+  }
+
+  async loadRecentEvents(limit = MAX_RECENT_EVENTS): Promise<EventLogEntry[]> {
+    return this.events
+      .slice(0, eventLimit(limit))
+      .map((raw) => JSON.parse(raw) as EventLogEntry);
+  }
+
   async clearAll(): Promise<void> {
     this.snapshots.clear();
     this.leases.clear();
+    this.events.length = 0;
   }
 
   async acquireLease(roomCode: string, owner: string, ttlMs: number): Promise<boolean> {
@@ -144,8 +163,30 @@ export class RedisSnapshotStorage implements SnapshotStorage {
     const keep = roomCode.toUpperCase();
     await this.client.set(this.activeRoomKey, keep);
     const keys = await this.client.keys("color-turf:*");
-    const stale = keys.filter((key) => key !== this.activeRoomKey && key !== snapshotKey(keep));
+    const stale = keys.filter((key) => key !== this.activeRoomKey && key !== snapshotKey(keep) && key !== opsEventsKey);
     if (stale.length > 0) await this.client.del(stale);
+  }
+
+  async appendEvent(entry: EventLogEntry): Promise<void> {
+    await this.client.multi()
+      .lPush(opsEventsKey, JSON.stringify(entry))
+      .lTrim(opsEventsKey, 0, MAX_RECENT_EVENTS - 1)
+      .exec();
+  }
+
+  async loadRecentEvents(limit = MAX_RECENT_EVENTS): Promise<EventLogEntry[]> {
+    const boundedLimit = eventLimit(limit);
+    if (boundedLimit === 0) return [];
+    const values = await this.client.lRange(opsEventsKey, 0, boundedLimit - 1);
+    const entries: EventLogEntry[] = [];
+    for (const value of values) {
+      try {
+        entries.push(JSON.parse(value) as EventLogEntry);
+      } catch {
+        // Ignore a malformed historical entry so observability remains available.
+      }
+    }
+    return entries;
   }
 
   async clearAll(): Promise<void> {

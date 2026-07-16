@@ -19,5 +19,6 @@ data:
   KUBERNETES_LABEL_SELECTOR: {{ printf "app.kubernetes.io/instance=%s,app.kubernetes.io/component=game-server,color-turf/release-channel=stable" .Release.Name | quote }}
   KUBERNETES_DEPLOYMENT_NAME: {{ printf "%s-server-stable" (include "color-turf.fullname" .) | quote }}
   ALLOW_DEMO_OOM_KILL: {{ .Values.chaos.allowPodOom | default false | quote }}
+  ALLOW_DEMO_SERVER_SHUTDOWN: {{ .Values.chaos.allowServerShutdown | default false | quote }}
   OOM_LEAK_CHUNK_MIB: {{ .Values.chaos.oomLeakChunkMiB | default 4 | quote }}
   OOM_LEAK_INTERVAL_MS: {{ .Values.chaos.oomLeakIntervalMs | default 250 | quote }}

@@ -6,11 +6,29 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { Server as SocketServer, type Socket } from "socket.io";
 import {
   TEAM_IDS,
+  clientRenderStatsPayloadSchema,
+  demoChaosFailoverPayloadSchema,
+  demoChaosFullBroadcastPayloadSchema,
+  demoChaosLagPayloadSchema,
+  demoChaosPrimaryFailurePayloadSchema,
+  demoChaosResetPayloadSchema,
+  demoChaosServerShutdownPayloadSchema,
   inputPayloadSchema,
   joinPayloadSchema,
   opsEventSchema,
   type BroadcastMode,
+  type ClientRenderStatsPayload,
   type ClusterName,
+  type DemoChaosAction,
+  type DemoChaosActionResponse,
+  type DemoChaosFailoverPayload,
+  type DemoChaosFullBroadcastPayload,
+  type DemoChaosLagPayload,
+  type DemoChaosPrimaryFailurePayload,
+  type DemoChaosResetPayload,
+  type DemoChaosServerShutdownPayload,
+  type DemoChaosStatus,
+  type DemoFailoverTarget,
   type EventLogEntry,
   type GameConfig,
   type InputPayload,
@@ -37,7 +55,14 @@ import { MemoryRoomStore, summarizeRoom } from "./store.js";
 interface SocketData {
   role?: "controller" | "watcher" | "ops" | "admin";
   roomCode?: string;
+  opsRoomCode?: string;
   sessionId?: string;
+}
+
+export interface DemoServerShutdownRequest {
+  requestedAt: string;
+  reason: string;
+  server: ServerIdentity;
 }
 
 export interface GameServerOptions {
@@ -53,11 +78,18 @@ export interface GameServerOptions {
   redisUrl?: string;
   snapshotStorage?: SnapshotStorage;
   snapshotIntervalMs?: number;
+  socketPath?: string;
+  stableSocketPath?: string;
+  canarySocketPath?: string;
+  canaryApiUrl?: string;
+  partitionRoomsByRelease?: boolean;
   demoTickDelayMs?: number;
   memoryOomAllocate?: (bytes: number) => Buffer;
   memoryOomSchedule?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
   memoryOomChunkBytes?: number;
   memoryOomIntervalMs?: number;
+  clientRenderTelemetryTtlMs?: number;
+  onDemoServerShutdown?: (request: DemoServerShutdownRequest) => void | Promise<void>;
 }
 
 export interface RunningGameServer {
@@ -80,6 +112,29 @@ interface RuntimeStats {
   cpuPercent: number;
 }
 
+interface ClientRenderObservation {
+  observedAt: number;
+  stats: ClientRenderStatsPayload;
+}
+
+type DemoChaosCommand =
+  | { action: "lag"; payload: DemoChaosLagPayload }
+  | { action: "full-broadcast"; payload: DemoChaosFullBroadcastPayload }
+  | { action: "server-shutdown"; payload: DemoChaosServerShutdownPayload }
+  | { action: "primary-failure"; payload: DemoChaosPrimaryFailurePayload }
+  | { action: "failover"; payload: DemoChaosFailoverPayload }
+  | { action: "reset"; payload: DemoChaosResetPayload };
+
+interface DemoChaosErrorResponse {
+  error: string;
+  code?: string;
+}
+
+interface DemoChaosExecutionResponse {
+  statusCode: number;
+  body: DemoChaosActionResponse | DemoChaosErrorResponse;
+}
+
 type RoomClusterCommand =
   | { kind: "snapshot"; roomCode: string }
   | { kind: "join"; roomCode: string; sessionId: string; socketId: string; nickname?: string; isBot: boolean }
@@ -89,7 +144,9 @@ type RoomClusterCommand =
   | { kind: "update"; roomCode: string; patch: Parameters<GameRoom["updateConfig"]>[0] }
   | { kind: "paint-boost"; roomCode: string; durationMs: number }
   | { kind: "announce"; roomCode: string; message: string }
-  | { kind: "bots"; roomCode: string; action: "add" | "remove"; count: number };
+  | { kind: "bots"; roomCode: string; action: "add" | "remove"; count: number }
+  | { kind: "ops"; roomCode: string }
+  | ({ kind: "chaos"; roomCode: string } & DemoChaosCommand);
 
 interface RoomClusterResponse {
   handled: boolean;
@@ -97,10 +154,12 @@ interface RoomClusterResponse {
   join?: JoinResult;
   input?: InputResult;
   sessionIds?: string[];
+  ops?: OpsSnapshot;
+  chaos?: DemoChaosExecutionResponse;
   error?: string;
 }
 
-export const DEFAULT_TICK_RATE_HZ = 20;
+export const DEFAULT_TICK_RATE_HZ = 30;
 const DEFAULT_TICK_INTERVAL_MS = 1000 / DEFAULT_TICK_RATE_HZ;
 
 const numeric = (value: unknown, fallback: number): number => {
@@ -148,7 +207,17 @@ const createConfig = (body: Record<string, unknown> = {}): GameConfig => {
 export const createGameServer = (options: GameServerOptions = {}) => {
   const app = express();
   const httpServer: HttpServer = createServer(app);
-  const socketPath = process.env.SOCKET_PATH ?? "/socket.io";
+  const processReleaseChannel = options.releaseChannel ?? (process.env.RELEASE_CHANNEL === "canary" ? "canary" : "stable");
+  const socketPath = options.socketPath ?? process.env.SOCKET_PATH ?? "/socket.io";
+  const stableSocketPath = options.stableSocketPath
+    ?? process.env.STABLE_SOCKET_PATH
+    ?? (processReleaseChannel === "stable" ? socketPath : "/socket.io");
+  const canarySocketPath = options.canarySocketPath
+    ?? process.env.CANARY_SOCKET_PATH
+    ?? (processReleaseChannel === "canary" ? socketPath : "/socket/canary");
+  const canaryApiUrl = (options.canaryApiUrl ?? process.env.CANARY_API_URL ?? "").replace(/\/$/, "");
+  const partitionRoomsByRelease = options.partitionRoomsByRelease
+    ?? process.env.PARTITION_ROOMS_BY_RELEASE === "true";
   const io = new SocketServer(httpServer, {
     path: socketPath,
     cors: { origin: true, credentials: true },
@@ -160,7 +229,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const kubernetes = new KubernetesObserver();
   const storage = options.snapshotStorage ?? createSnapshotStorage(options.redisUrl);
   const startedAt = new Date().toISOString();
-  const ownerId = `${options.clusterName ?? process.env.CLUSTER_NAME ?? "primary"}:${options.podName ?? process.env.POD_NAME ?? "local"}:${randomUUID()}`;
+  const stableVersion = options.appVersion ?? process.env.SERVER_VERSION ?? process.env.APP_VERSION ?? "v1.1.3";
+  const ownerId = `${options.clusterName ?? process.env.CLUSTER_NAME ?? "primary"}:${options.podName ?? process.env.POD_NAME ?? "local"}:${stableVersion}:${randomUUID()}`;
   const redisUrl = options.redisUrl ?? process.env.REDIS_URL;
   const socketCluster = redisUrl ? new RedisSocketCluster(redisUrl) : null;
   const roomCoordinator = redisUrl
@@ -168,17 +238,23 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     : null;
   const leaseTtlMs = 7000;
   const snapshotIntervalMs = Math.max(250, options.snapshotIntervalMs ?? numeric(process.env.SNAPSHOT_INTERVAL_MS, 1000));
+  const clientRenderTelemetryTtlMs = Math.max(
+    50,
+    options.clientRenderTelemetryTtlMs ?? numeric(process.env.CLIENT_RENDER_TELEMETRY_TTL_MS, 5_000),
+  );
   const adminToken = options.adminToken ?? process.env.ADMIN_TOKEN ?? "demo-admin";
   const demoAdminAuthDisabled = process.env.DEMO_ADMIN_AUTH_DISABLED === "true";
   const singleUseMode = process.env.SINGLE_USE_GAME === "true";
   const opsEventToken = options.opsEventToken ?? process.env.OPS_EVENT_TOKEN ?? "demo-ops";
-  const stableVersion = options.appVersion ?? process.env.SERVER_VERSION ?? process.env.APP_VERSION ?? "v1.1.3";
   const canaryVersion = process.env.CANARY_SERVER_VERSION ?? "v1.2.0";
   const configuredBroadcastMode = options.broadcastMode ?? (process.env.BROADCAST_MODE === "full" ? "full" : "delta");
   const configuredTickDelayMs = Math.max(0, options.demoTickDelayMs ?? numeric(process.env.DEMO_TICK_DELAY_MS, 0));
   let boundUrl = "http://127.0.0.1:3001";
   let tickRunning = false;
+  let tickSchedulerActive = false;
+  let nextTickAt = 0;
   let leaseMaintenanceRunning = false;
+  let opsBroadcastRunning = false;
 
   const events: EventLogEntry[] = [];
   const stats: RuntimeStats = {
@@ -195,17 +271,36 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     lastSnapshotAt: null,
     cpuPercent: 0,
   };
+  const persistedSnapshotAtByRoom = new Map<string, number>();
+  const clientRenderObservations = new Map<string, ClientRenderObservation>();
   let lastCpuUsage = process.cpuUsage();
   let lastCpuSampleAt = Date.now();
   const runtimeMode = {
-    latencyMs: configuredTickDelayMs,
-    forceFullBroadcast: configuredBroadcastMode === "full",
+    tickDelayOverrideMs: null as number | null,
+    fullBroadcastOverride: null as boolean | null,
     activeCluster: options.clusterName ?? (
       process.env.CLUSTER_NAME === "dr" || process.env.CLUSTER_NAME === "cluster-1" || process.env.CLUSTER_NAME === "cluster-2"
         ? process.env.CLUSTER_NAME
         : "primary"
     ),
   };
+  let runtimeControlUpdatedAt: string | null = null;
+  let primaryFailureSimulation: DemoChaosStatus["simulations"]["primaryFailure"] = {
+    active: false,
+    label: "SIMULATION",
+    source: "timeline-only",
+    requestedAt: null,
+    reason: null,
+  };
+  let failoverSimulation: DemoChaosStatus["simulations"]["failover"] = {
+    active: false,
+    label: "SIMULATION",
+    source: "timeline-only",
+    requestedAt: null,
+    targetCluster: null,
+  };
+  let serverShutdownRequestedAt: string | null = null;
+  const demoServerShutdownAllowed = process.env.ALLOW_DEMO_SERVER_SHUTDOWN === "true";
 
   let tickTimer: NodeJS.Timeout | null = null;
   let opsTimer: NodeJS.Timeout | null = null;
@@ -230,22 +325,74 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     message: "실제 메모리 장애를 주입하지 않았습니다.",
   };
   const announcementTimers = new Map<string, NodeJS.Timeout>();
+  const pendingEventWrites = new Map<string, Promise<boolean>>();
+
+  const effectiveTickDelayMs = (): number => runtimeMode.tickDelayOverrideMs ?? configuredTickDelayMs;
+  const effectiveBaseBroadcastMode = (): BroadcastMode => {
+    if (runtimeMode.fullBroadcastOverride !== null) return runtimeMode.fullBroadcastOverride ? "full" : "delta";
+    return configuredBroadcastMode;
+  };
 
   const baseIdentity = (): ServerIdentity => ({
     version: stableVersion,
     gitSha: options.gitSha ?? process.env.GIT_SHA ?? "local",
     podName: options.podName ?? process.env.POD_NAME ?? "local-process",
     cluster: runtimeMode.activeCluster,
-    releaseChannel: options.releaseChannel ?? (process.env.RELEASE_CHANNEL === "canary" ? "canary" : "stable"),
-    broadcastMode: runtimeMode.forceFullBroadcast ? "full" : configuredBroadcastMode,
+    releaseChannel: processReleaseChannel,
+    broadcastMode: effectiveBaseBroadcastMode(),
   });
+
+  const roomSocketPath = (releaseChannel: "stable" | "canary"): string => {
+    if (releaseChannel === "stable") return stableSocketPath;
+    return canaryApiUrl || processReleaseChannel === "canary" ? canarySocketPath : socketPath;
+  };
 
   const roomIdentity = (room: GameRoom): ServerIdentity => ({
     ...baseIdentity(),
     version: room.releaseChannel === "canary" ? canaryVersion : stableVersion,
     releaseChannel: room.releaseChannel,
-    broadcastMode: runtimeMode.forceFullBroadcast || room.releaseChannel === "canary" ? "full" : configuredBroadcastMode,
+    broadcastMode: runtimeMode.fullBroadcastOverride !== null
+      ? (runtimeMode.fullBroadcastOverride ? "full" : "delta")
+      : (room.releaseChannel === "canary" ? "full" : configuredBroadcastMode),
   });
+
+  const getDemoChaosStatus = (
+    observedAt = new Date().toISOString(),
+    ownerRoomCode: string | null = null,
+  ): DemoChaosStatus => {
+    const effectiveBroadcastMode = effectiveBaseBroadcastMode();
+    return {
+      observedAt,
+      source: "game-api-runtime",
+      scope: {
+        kind: ownerRoomCode ? "room-owner-process" : "process",
+        roomCode: ownerRoomCode,
+        podName: baseIdentity().podName,
+      },
+      runtime: {
+        tickDelayMs: effectiveTickDelayMs(),
+        fullBroadcastEnabled: effectiveBroadcastMode === "full",
+        effectiveBroadcastMode,
+        configuredTickDelayMs,
+        configuredBroadcastMode,
+        overrideActive: runtimeMode.tickDelayOverrideMs !== null || runtimeMode.fullBroadcastOverride !== null,
+        source: runtimeMode.tickDelayOverrideMs !== null || runtimeMode.fullBroadcastOverride !== null
+          ? "admin-api"
+          : "environment",
+        updatedAt: runtimeControlUpdatedAt,
+      },
+      simulations: {
+        primaryFailure: { ...primaryFailureSimulation },
+        failover: { ...failoverSimulation },
+      },
+      serverShutdown: {
+        allowed: demoServerShutdownAllowed,
+        handlerAvailable: typeof options.onDemoServerShutdown === "function",
+        requestedAt: serverShutdownRequestedAt,
+        source: "environment-gated",
+      },
+    };
+  };
 
   const addEvent = (
     type: string,
@@ -265,6 +412,24 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     };
     events.unshift(entry);
     if (events.length > 200) events.length = 200;
+    const persistence = storage.appendEvent(entry)
+      .then(() => true)
+      .catch((error: unknown) => {
+        if (process.env.NODE_ENV !== "test") {
+          console.error(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "error",
+            message: "shared ops event persistence failed",
+            eventId: entry.id,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+        return false;
+      });
+    pendingEventWrites.set(entry.id, persistence);
+    void persistence.finally(() => {
+      if (pendingEventWrites.get(entry.id) === persistence) pendingEventWrites.delete(entry.id);
+    });
     io.emit("ops_event", entry);
     if (process.env.NODE_ENV !== "test") {
       console.log(JSON.stringify({
@@ -282,6 +447,28 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       }));
     }
     return entry;
+  };
+
+  const syncSharedEvents = async (): Promise<void> => {
+    try {
+      const sharedEvents = await storage.loadRecentEvents(200);
+      const merged = new Map<string, EventLogEntry>();
+      for (const entry of events) merged.set(entry.id, entry);
+      for (const entry of sharedEvents) if (!merged.has(entry.id)) merged.set(entry.id, entry);
+      const ordered = [...merged.values()]
+        .sort((left, right) => (Date.parse(right.at) || 0) - (Date.parse(left.at) || 0))
+        .slice(0, 200);
+      events.splice(0, events.length, ...ordered);
+    } catch (error) {
+      if (process.env.NODE_ENV !== "test") {
+        console.error(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          message: "shared ops event load failed",
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
   };
 
   const roomStore = new MemoryRoomStore((roomCode: string, event: GameEvent) => {
@@ -333,23 +520,54 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     return summarizeRoom(room.snapshot());
   });
 
-  const runtimeMetricSummary = () => ({
-    tickMeanMs: stats.tickDurationsMs.length === 0 ? 0 : stats.tickDurationsMs.reduce((sum, value) => sum + value, 0) / stats.tickDurationsMs.length,
-    tickP95Ms: percentile(stats.tickDurationsMs),
-    broadcastP95Ms: percentile(stats.broadcastDurationsMs),
-    websocketRttP95Ms: percentile(stats.rttValuesMs),
-    statePayloadBytes: Math.round(percentile(stats.payloadBytes)),
-    reconnects: stats.reconnects,
-    snapshotCreatedAt: stats.lastSnapshotAt ? new Date(stats.lastSnapshotAt).toISOString() : null,
-    snapshotAgeSeconds: stats.lastSnapshotAt ? Math.max(0, (Date.now() - stats.lastSnapshotAt) / 1000) : null,
-    eventLoopLagP95Ms: Number.isFinite(eventLoopDelay.percentile(95)) ? eventLoopDelay.percentile(95) / 1_000_000 : 0,
-    cpuPercent: stats.cpuPercent,
-    memoryRssMb: process.memoryUsage().rss / 1024 / 1024,
-    heapUsedMb: process.memoryUsage().heapUsed / 1024 / 1024,
-    inputRejectRate: stats.totalInputEvents === 0 ? 0 : (stats.rejectedInputEvents / stats.totalInputEvents) * 100,
+  const snapshotAgeSamples = (now = Date.now()) => roomStore.list().flatMap((room) => {
+    const snapshotCreatedAt = persistedSnapshotAtByRoom.get(room.roomCode);
+    if (snapshotCreatedAt === undefined) return [];
+    return [{
+      roomCode: room.roomCode,
+      cluster: baseIdentity().cluster,
+      ageSeconds: Math.max(0, (now - snapshotCreatedAt) / 1000),
+    }];
   });
 
-  const getOpsSnapshot = async (): Promise<OpsSnapshot> => {
+  const currentClientRenderMetrics = (now = Date.now()) => {
+    for (const [socketId, observation] of clientRenderObservations) {
+      if (now - observation.observedAt > clientRenderTelemetryTtlMs) clientRenderObservations.delete(socketId);
+    }
+    const observations = [...clientRenderObservations.values()];
+    return {
+      fpsP10: percentile(observations.map((observation) => observation.stats.fps), 0.1),
+      frameTimeP95Ms: percentile(observations.map((observation) => observation.stats.frameTimeP95Ms)),
+      frameDropP95Percent: percentile(observations.map((observation) => observation.stats.droppedFramePercent)),
+      clients: observations.length,
+    };
+  };
+
+  const runtimeMetricSummary = () => {
+    const clientRender = currentClientRenderMetrics();
+    return {
+      tickMeanMs: stats.tickDurationsMs.length === 0 ? 0 : stats.tickDurationsMs.reduce((sum, value) => sum + value, 0) / stats.tickDurationsMs.length,
+      tickP95Ms: percentile(stats.tickDurationsMs),
+      broadcastP95Ms: percentile(stats.broadcastDurationsMs),
+      websocketRttP95Ms: percentile(stats.rttValuesMs),
+      clientFpsP10: clientRender.fpsP10,
+      clientFrameTimeP95Ms: clientRender.frameTimeP95Ms,
+      clientFrameDropP95Percent: clientRender.frameDropP95Percent,
+      clientTelemetryClients: clientRender.clients,
+      statePayloadBytes: Math.round(percentile(stats.payloadBytes)),
+      reconnects: stats.reconnects,
+      snapshotCreatedAt: stats.lastSnapshotAt ? new Date(stats.lastSnapshotAt).toISOString() : null,
+      snapshotAgeSeconds: stats.lastSnapshotAt ? Math.max(0, (Date.now() - stats.lastSnapshotAt) / 1000) : null,
+      eventLoopLagP95Ms: Number.isFinite(eventLoopDelay.percentile(95)) ? eventLoopDelay.percentile(95) / 1_000_000 : 0,
+      cpuPercent: stats.cpuPercent,
+      memoryRssMb: process.memoryUsage().rss / 1024 / 1024,
+      heapUsedMb: process.memoryUsage().heapUsed / 1024 / 1024,
+      inputRejectRate: stats.totalInputEvents === 0 ? 0 : (stats.rejectedInputEvents / stats.totalInputEvents) * 100,
+    };
+  };
+
+  const getOpsSnapshot = async (ownerRoomCode: string | null = null): Promise<OpsSnapshot> => {
+    await syncSharedEvents();
     const now = Date.now();
     const cpuUsage = process.cpuUsage();
     const wallMicros = Math.max(1, (now - lastCpuSampleAt) * 1000);
@@ -378,7 +596,13 @@ export const createGameServer = (options: GameServerOptions = {}) => {
           : "Kubernetes가 OOMKilled를 기록했고 컨테이너를 다시 시작하고 있습니다.",
       };
     }
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries);
+    const runtimeMetrics = runtimeMetricSummary();
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries, snapshotAgeSamples(now), {
+      fpsP10: runtimeMetrics.clientFpsP10,
+      frameTimeP95Ms: runtimeMetrics.clientFrameTimeP95Ms,
+      frameDropP95Percent: runtimeMetrics.clientFrameDropP95Percent,
+      clients: runtimeMetrics.clientTelemetryClients,
+    });
     return {
       observedAt: new Date(now).toISOString(),
       server: {
@@ -393,11 +617,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         disconnects: stats.disconnects,
         reconnects: stats.reconnects,
         identity: baseIdentity(),
-        metrics: runtimeMetricSummary(),
+        metrics: runtimeMetrics,
       },
       rooms: summaries,
       infrastructure,
       faultInjection: { ...memoryOomFault },
+      demoChaos: getDemoChaosStatus(new Date(now).toISOString(), ownerRoomCode),
       recentEvents: events.slice(0, 60),
     };
   };
@@ -418,7 +643,10 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const resolvePublicBaseUrl = (request?: Request): string => {
     const configured = options.publicBaseUrl ?? process.env.PUBLIC_BASE_URL;
     if (configured) return configured.replace(/\/$/, "");
-    if (request) return `${request.protocol}://${request.get("host")}`;
+    if (request) {
+      const forwardedHost = request.get("x-forwarded-host")?.split(",")[0]?.trim();
+      return `${request.protocol}://${forwardedHost || request.get("host")}`;
+    }
     return "http://localhost:5173";
   };
 
@@ -433,7 +661,99 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const requireAdmin = demoAdminAuthDisabled
     ? (_request: Request, _response: Response, next: NextFunction) => next()
     : requireToken(adminToken);
+  // Chaos controls remain token-protected even in the optional no-login demo
+  // mode because some controls can change live runtime behavior.
+  const requireChaosAdmin = requireToken(adminToken);
   const requireOpsEvent = requireToken(opsEventToken);
+
+  const forwardCanaryRoomCreation = async (request: Request, response: Response): Promise<void> => {
+    try {
+      const upstream = await fetch(`${canaryApiUrl}/api/rooms`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-type": "application/json",
+          "x-forwarded-host": request.get("host") ?? "",
+          "x-forwarded-proto": request.protocol,
+        },
+        body: JSON.stringify(request.body ?? {}),
+        signal: AbortSignal.timeout(5000),
+      });
+      const rawBody = await upstream.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody) as unknown;
+      } catch {
+        response.status(502).json({ error: "Canary room service returned an invalid response" });
+        return;
+      }
+      response.status(upstream.status).json(body);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary room service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+  };
+
+  const forwardCanaryOps = async (request: Request, response: Response): Promise<void> => {
+    try {
+      const upstream = await fetch(`${canaryApiUrl}${request.originalUrl}`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      const rawBody = await upstream.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody) as unknown;
+      } catch {
+        response.status(502).json({ error: "Canary telemetry service returned an invalid response" });
+        return;
+      }
+      response.status(upstream.status).json(body);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary telemetry service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+  };
+
+  const forwardCanaryChaosIfRequested = async (request: Request, response: Response): Promise<boolean> => {
+    if (request.query.releaseChannel !== "canary" || !canaryApiUrl || processReleaseChannel === "canary") {
+      return false;
+    }
+    try {
+      const upstream = await fetch(`${canaryApiUrl}${request.originalUrl}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-type": "application/json",
+          "x-forwarded-host": request.get("host") ?? "",
+          "x-forwarded-proto": request.protocol,
+        },
+        body: JSON.stringify(request.body ?? {}),
+        signal: AbortSignal.timeout(5_000),
+      });
+      const rawBody = await upstream.text();
+      const contentType = upstream.headers.get("content-type");
+      if (contentType) response.setHeader("Content-Type", contentType);
+      response.status(upstream.status).send(rawBody);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary chaos service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+    return true;
+  };
+
+  const saveRoomSnapshot = async (room: GameRoom): Promise<void> => {
+    setIdentity(room);
+    const started = performance.now();
+    const state = room.serialize();
+    await storage.save(state);
+    const elapsed = performance.now() - started;
+    persistedSnapshotAtByRoom.set(room.roomCode, state.snapshotCreatedAt);
+    stats.lastSnapshotAt = Math.max(stats.lastSnapshotAt ?? 0, state.snapshotCreatedAt);
+    metrics.gameSnapshotSaveDuration.observe({ cluster: baseIdentity().cluster }, elapsed / 1000);
+  };
 
   const persistRooms = async () => {
     const activeRoom = singleUseMode ? await storage.activeRoomCode() : null;
@@ -441,17 +761,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       if (activeRoom && room.roomCode !== activeRoom) {
         botManager.stopRoom(room.roomCode, false);
         roomStore.remove(room.roomCode);
+        persistedSnapshotAtByRoom.delete(room.roomCode);
         await storage.releaseLease(room.roomCode, ownerId);
         addEvent("room.expired", `Removed stale room ${room.roomCode} in single-use mode`, "system", room.roomCode);
         continue;
       }
-      setIdentity(room);
-      const started = performance.now();
-      await storage.save(room.serialize());
-      const elapsed = performance.now() - started;
-      stats.lastSnapshotAt = Date.now();
-      metrics.gameSnapshotSaveDuration.observe({ cluster: baseIdentity().cluster }, elapsed / 1000);
-      metrics.gameSnapshotAge.set({ room_id: room.roomCode, cluster: baseIdentity().cluster }, 0);
+      await saveRoomSnapshot(room);
     }
   };
 
@@ -464,9 +779,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       : new Set<string>();
     for (const state of persistedRooms) {
       if (roomStore.get(state.roomCode)) continue;
+      if (partitionRoomsByRelease && state.config.releaseChannel !== processReleaseChannel) continue;
       if (!(await storage.acquireLease(state.roomCode, ownerId, leaseTtlMs))) continue;
       const recoveryStarted = performance.now();
       const room = roomStore.restore(state, true);
+      persistedSnapshotAtByRoom.set(room.roomCode, state.snapshotCreatedAt);
+      stats.lastSnapshotAt = Math.max(stats.lastSnapshotAt ?? 0, state.snapshotCreatedAt);
       for (const player of state.players) {
         if (player.connected && player.socketId && !liveSocketIds.has(player.socketId)) {
           room.disconnect(player.id, player.socketId);
@@ -507,6 +825,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         if (renewed) continue;
         botManager.stopRoom(room.roomCode, false);
         roomStore.remove(room.roomCode);
+        persistedSnapshotAtByRoom.delete(room.roomCode);
         addEvent("ROOM_LEASE_LOST", `Stopped serving ${room.roomCode} after lease loss`, "system", room.roomCode);
         for (const socket of await io.fetchSockets()) {
           if ((socket.data as SocketData).roomCode === room.roomCode) socket.disconnect(true);
@@ -522,11 +841,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     if (tickRunning) return;
     tickRunning = true;
     try {
-      if (runtimeMode.latencyMs > 0) await new Promise((resolve) => setTimeout(resolve, runtimeMode.latencyMs));
+      const tickDelayMs = effectiveTickDelayMs();
+      if (tickDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, tickDelayMs));
       for (const room of roomStore.list()) {
         const started = performance.now();
         const changed = room.tick();
-        const elapsed = performance.now() - started + runtimeMode.latencyMs;
+        const elapsed = performance.now() - started + tickDelayMs;
         pushWindow(stats.tickDurationsMs, elapsed);
         setIdentity(room);
         const snapshot = room.snapshot();
@@ -538,6 +858,21 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }
   };
 
+  const scheduleNextTick = () => {
+    if (!tickSchedulerActive) return;
+    const delayMs = Math.max(0, nextTickAt - performance.now());
+    tickTimer = setTimeout(() => {
+      tickTimer = null;
+      void runTicks().finally(() => {
+        if (!tickSchedulerActive) return;
+        nextTickAt += DEFAULT_TICK_INTERVAL_MS;
+        const now = performance.now();
+        if (nextTickAt <= now) nextTickAt = now + DEFAULT_TICK_INTERVAL_MS;
+        scheduleNextTick();
+      });
+    }, delayMs);
+  };
+
   const botManager = new BotManager(
     // In Kubernetes, route bot sockets through the Service so each connection
     // exercises a real gateway replica. Local development stays in-process.
@@ -545,6 +880,236 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     () => socketPath,
     (roomCode, sessionId) => { roomStore.get(roomCode)?.removeBot(sessionId); },
   );
+
+  const chaosActionResponse = (
+    action: DemoChaosAction,
+    ownerRoomCode: string | null,
+  ): DemoChaosActionResponse => ({
+    ok: true,
+    action,
+    status: getDemoChaosStatus(new Date().toISOString(), ownerRoomCode),
+  });
+
+  const executeLocalChaosAction = async (
+    command: DemoChaosCommand,
+    ownerRoomCode: string | null,
+  ): Promise<DemoChaosExecutionResponse> => {
+    const eventRoomCode = ownerRoomCode;
+    const effectScope = ownerRoomCode ? "room-owner-process" : "process";
+
+    if (command.action === "lag") {
+      const updatedAt = new Date().toISOString();
+      runtimeMode.tickDelayOverrideMs = command.payload.delayMs;
+      runtimeControlUpdatedAt = updatedAt;
+      addEvent(
+        "chaos.tick-delay.updated",
+        `Actual runtime tick delay set to ${command.payload.delayMs}ms`,
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          delayMs: command.payload.delayMs,
+          configuredDelayMs: configuredTickDelayMs,
+          source: "admin-api",
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "full-broadcast") {
+      const updatedAt = new Date().toISOString();
+      runtimeMode.fullBroadcastOverride = command.payload.enabled;
+      runtimeControlUpdatedAt = updatedAt;
+      for (const room of roomStore.list()) broadcastSnapshot(room);
+      addEvent(
+        "chaos.full-broadcast.updated",
+        `Actual runtime broadcast mode set to ${command.payload.enabled ? "full" : "delta"}`,
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          enabled: command.payload.enabled,
+          configuredMode: configuredBroadcastMode,
+          source: "admin-api",
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "server-shutdown") {
+      if (!demoServerShutdownAllowed) {
+        addEvent(
+          "chaos.server-shutdown.blocked",
+          "Demo server shutdown request blocked because the explicit environment gate is disabled",
+          "chaos",
+          eventRoomCode,
+          { effect: "blocked", effectScope, source: "environment-gate" },
+        );
+        return {
+          statusCode: 409,
+          body: {
+            error: "Demo server shutdown is disabled. Set ALLOW_DEMO_SERVER_SHUTDOWN=true explicitly.",
+            code: "DEMO_SERVER_SHUTDOWN_DISABLED",
+          },
+        };
+      }
+      const shutdownHandler = options.onDemoServerShutdown;
+      if (!shutdownHandler) {
+        addEvent(
+          "chaos.server-shutdown.blocked",
+          "Demo server shutdown request blocked because no shutdown handler is installed",
+          "chaos",
+          eventRoomCode,
+          { effect: "blocked", effectScope, source: "missing-handler" },
+        );
+        return {
+          statusCode: 409,
+          body: {
+            error: "Demo server shutdown handler is unavailable.",
+            code: "DEMO_SERVER_SHUTDOWN_HANDLER_UNAVAILABLE",
+          },
+        };
+      }
+      const requestedAt = new Date().toISOString();
+      const reason = command.payload.reason ?? "Requested from Demo / Chaos Controls";
+      serverShutdownRequestedAt = requestedAt;
+      const shutdownRequest: DemoServerShutdownRequest = {
+        requestedAt,
+        reason,
+        server: baseIdentity(),
+      };
+      addEvent(
+        "chaos.server-shutdown.requested",
+        "Actual game server shutdown accepted by the environment-gated handler",
+        "chaos",
+        eventRoomCode,
+        {
+          effect: "actual-runtime",
+          effectScope,
+          source: "admin-api",
+          reason,
+          podName: shutdownRequest.server.podName,
+        },
+      );
+      // A room-targeted request may have arrived over Redis RPC. Give the
+      // coordinator enough time to publish the accepted response before the
+      // injected handler starts graceful process shutdown.
+      setTimeout(() => {
+        void Promise.resolve(shutdownHandler(shutdownRequest)).catch((error: unknown) => {
+          addEvent(
+            "chaos.server-shutdown.failed",
+            error instanceof Error ? error.message : "Demo server shutdown handler failed",
+            "chaos",
+            eventRoomCode,
+            { effect: "actual-runtime", effectScope, source: "shutdown-handler" },
+          );
+        });
+      }, ownerRoomCode ? 100 : 0);
+      return { statusCode: 202, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "primary-failure") {
+      const requestedAt = new Date().toISOString();
+      const reason = command.payload.reason ?? "Primary failure demo marker requested";
+      primaryFailureSimulation = {
+        active: true,
+        label: "SIMULATION",
+        source: "timeline-only",
+        requestedAt,
+        reason,
+      };
+      addEvent(
+        "PRIMARY_UNHEALTHY",
+        `[SIMULATION] Primary failure timeline marker only; actual cluster remains ${baseIdentity().cluster}`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster: baseIdentity().cluster,
+          reason,
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    if (command.action === "failover") {
+      const requestedAt = new Date().toISOString();
+      const targetCluster: DemoFailoverTarget = command.payload.targetCluster ?? "dr";
+      failoverSimulation = {
+        active: true,
+        label: "SIMULATION",
+        source: "timeline-only",
+        requestedAt,
+        targetCluster,
+      };
+      const actualCluster = baseIdentity().cluster;
+      addEvent(
+        "FAILOVER_STARTED",
+        `[SIMULATION] Failover timeline started toward ${targetCluster}; no traffic or room authority changed`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster,
+          targetCluster,
+        },
+      );
+      addEvent(
+        "FAILOVER_COMPLETED",
+        `[SIMULATION] Failover timeline completed; actual cluster remains ${actualCluster}`,
+        "simulation",
+        eventRoomCode,
+        {
+          simulation: true,
+          effect: "timeline-only",
+          effectScope,
+          actualCluster,
+          targetCluster,
+        },
+      );
+      return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+    }
+
+    runtimeMode.tickDelayOverrideMs = null;
+    runtimeMode.fullBroadcastOverride = null;
+    runtimeControlUpdatedAt = null;
+    primaryFailureSimulation = {
+      active: false,
+      label: "SIMULATION",
+      source: "timeline-only",
+      requestedAt: null,
+      reason: null,
+    };
+    failoverSimulation = {
+      active: false,
+      label: "SIMULATION",
+      source: "timeline-only",
+      requestedAt: null,
+      targetCluster: null,
+    };
+    serverShutdownRequestedAt = null;
+    for (const room of roomStore.list()) broadcastSnapshot(room);
+    addEvent(
+      "chaos.reset",
+      "Runtime chaos overrides returned to configured values and simulation markers were cleared",
+      "chaos",
+      eventRoomCode,
+      {
+        effect: "actual-runtime-and-simulation-state",
+        effectScope,
+        configuredDelayMs: configuredTickDelayMs,
+        configuredMode: configuredBroadcastMode,
+        source: "admin-api",
+      },
+    );
+    return { statusCode: 200, body: chaosActionResponse(command.action, ownerRoomCode) };
+  };
 
   const roomAction = (room: GameRoom, action: string): RoomSnapshot => {
     if (action === "start") return room.start();
@@ -577,7 +1142,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
             player: joined.player,
             snapshot,
             sessionId: command.sessionId,
-            socketPath,
+            socketPath: roomSocketPath(snapshot.config.releaseChannel),
             reconnected: joined.reconnected,
           },
         };
@@ -617,6 +1182,15 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         }
         return { handled: true, snapshot: room.snapshot() };
       }
+      if (command.kind === "ops") {
+        return { handled: true, ops: await getOpsSnapshot(room.roomCode) };
+      }
+      if (command.kind === "chaos") {
+        return {
+          handled: true,
+          chaos: await executeLocalChaosAction(command, room.roomCode),
+        };
+      }
 
       const sessionIds = command.action === "add"
         ? botManager.add(room.roomCode, command.count)
@@ -638,7 +1212,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   const dispatchRoomCommand = async (command: RoomClusterCommand): Promise<RoomClusterResponse> => {
     if (!roomCoordinator) return executeLocalRoomCommand(command);
-    return await roomCoordinator.request(command.roomCode, command) ?? { handled: false };
+    const timeoutMs = command.kind === "ops" ? 8_000 : 800;
+    return await roomCoordinator.request(command.roomCode, command, timeoutMs) ?? { handled: false };
   };
 
   const clusterRoomSummaries = async () => {
@@ -656,6 +1231,37 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     }))).filter((summary): summary is NonNullable<typeof summary> => summary !== null);
   };
 
+  const getRoomOwnerOpsSnapshot = async (roomCode: string): Promise<OpsSnapshot | null> => {
+    const result = await dispatchRoomCommand({ kind: "ops", roomCode });
+    return result.handled ? result.ops ?? null : null;
+  };
+
+  const broadcastOpsSnapshots = async (): Promise<void> => {
+    if (opsBroadcastRunning) return;
+    opsBroadcastRunning = true;
+    try {
+      const sockets = await io.local.in("ops").fetchSockets();
+      const snapshots = new Map<string, Promise<OpsSnapshot | null>>();
+      for (const socket of sockets) {
+        const targetRoomCode = (socket.data as SocketData).opsRoomCode ?? null;
+        const key = targetRoomCode ?? "__process__";
+        let snapshotPromise = snapshots.get(key);
+        if (!snapshotPromise) {
+          snapshotPromise = targetRoomCode
+            ? getRoomOwnerOpsSnapshot(targetRoomCode)
+            : getOpsSnapshot().then((snapshot) => snapshot);
+          snapshots.set(key, snapshotPromise);
+        }
+        const snapshot = await snapshotPromise.catch(() => null);
+        // Never replace a room-owner view with metrics from the arbitrary
+        // gateway Pod when its owner is temporarily unavailable.
+        if (snapshot) socket.emit("ops.snapshot", snapshot);
+      }
+    } finally {
+      opsBroadcastRunning = false;
+    }
+  };
+
   app.set("trust proxy", true);
   app.use(express.json({ limit: "64kb" }));
   app.use((request, response, next) => {
@@ -671,15 +1277,31 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   app.get("/healthz", (_request, response) => response.json({ status: "ok", service: "color-turf-game-server", version: baseIdentity().version }));
   app.get("/readyz", (_request, response) => {
-    const ready = storage.isReady();
-    response.status(ready ? 200 : 503).json({ status: ready ? "ready" : "not-ready", store: storage.kind, roomCount: roomStore.list().length });
+    const storageReady = storage.isReady();
+    const gameLoopReady = tickSchedulerActive;
+    const configReady = DEFAULT_TICK_RATE_HZ > 0 && snapshotIntervalMs > 0 && Boolean(stableVersion && baseIdentity().cluster);
+    const ready = storageReady && gameLoopReady && configReady;
+    response.status(ready ? 200 : 503).json({
+      status: ready ? "ready" : "not-ready",
+      store: storage.kind,
+      storageReady,
+      gameLoopReady,
+      configReady,
+      roomCount: roomStore.list().length,
+    });
   });
   app.get("/version", (_request, response) => {
     const version: VersionInfo = { ...baseIdentity(), startedAt };
     response.json(version);
   });
   app.get("/metrics", async (_request, response) => {
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries());
+    const runtimeMetrics = runtimeMetricSummary();
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries(), snapshotAgeSamples(), {
+      fpsP10: runtimeMetrics.clientFpsP10,
+      frameTimeP95Ms: runtimeMetrics.clientFrameTimeP95Ms,
+      frameDropP95Percent: runtimeMetrics.clientFrameDropP95Percent,
+      clients: runtimeMetrics.clientTelemetryClients,
+    });
     response.setHeader("Content-Type", metrics.register.contentType);
     response.send(await metrics.register.metrics());
   });
@@ -698,6 +1320,15 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   app.get("/api/rooms", async (_request, response) => response.json({ rooms: await clusterRoomSummaries() }));
   app.post("/api/rooms", requireAdmin, async (request, response) => {
+    const requestedConfig = createConfig(request.body as Record<string, unknown>);
+    if (requestedConfig.releaseChannel === "canary" && canaryApiUrl && processReleaseChannel !== "canary") {
+      await forwardCanaryRoomCreation(request, response);
+      return;
+    }
+    if (processReleaseChannel === "canary" && requestedConfig.releaseChannel !== "canary") {
+      response.status(409).json({ error: "Canary authority only creates canary rooms" });
+      return;
+    }
     if (singleUseMode) {
       const activeRoomCode = await storage.activeRoomCode();
       if (activeRoomCode) {
@@ -707,34 +1338,34 @@ export const createGameServer = (options: GameServerOptions = {}) => {
             room: existing.snapshot,
             joinUrl: `${resolvePublicBaseUrl(request)}/play/${existing.snapshot.roomCode}`,
             screenUrl: `${resolvePublicBaseUrl(request)}/watch/${existing.snapshot.roomCode}`,
-            socketPath,
+            socketPath: roomSocketPath(existing.snapshot.config.releaseChannel),
             reused: true,
           });
           return;
         }
       }
     }
-    const room = roomStore.create(createConfig(request.body as Record<string, unknown>));
+    const room = roomStore.create(requestedConfig);
     if (singleUseMode) {
       await storage.activateSingleRoom(room.roomCode);
       for (const stale of [...roomStore.list()]) {
         if (stale.roomCode === room.roomCode) continue;
         botManager.stopRoom(stale.roomCode, false);
         roomStore.remove(stale.roomCode);
+        persistedSnapshotAtByRoom.delete(stale.roomCode);
         await storage.releaseLease(stale.roomCode, ownerId);
       }
       addEvent("single_use.reset", `Activated ${room.roomCode} and removed every previous game`, "admin", room.roomCode);
     }
     await storage.acquireLease(room.roomCode, ownerId, leaseTtlMs);
-    setIdentity(room);
-    await storage.save(room.serialize());
+    await saveRoomSnapshot(room);
     addEvent("room.created", `Room ${room.roomCode} created`, "admin", room.roomCode);
     const snapshot = broadcastSnapshot(room);
     response.status(201).json({
       room: snapshot,
       joinUrl: `${resolvePublicBaseUrl(request)}/play/${room.roomCode}`,
       screenUrl: `${resolvePublicBaseUrl(request)}/watch/${room.roomCode}`,
-      socketPath,
+      socketPath: roomSocketPath(snapshot.config.releaseChannel),
     });
   });
   const loadRoom = async (roomCode: string) => dispatchRoomCommand({ kind: "snapshot", roomCode });
@@ -755,7 +1386,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json({
       roomId: result.snapshot.roomCode,
       releaseChannel: result.snapshot.config.releaseChannel,
-      socketPath,
+      socketPath: roomSocketPath(result.snapshot.config.releaseChannel),
       sessionId: randomUUID(),
     });
   });
@@ -824,8 +1455,116 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json({ action, count: sessionIds.length, sessionIds });
   });
 
-  app.get("/api/ops", async (_request, response) => response.json(await getOpsSnapshot()));
-  app.get("/api/ops/events", (_request, response) => response.json({ events: events.slice(0, 100) }));
+  const rejectInvalidChaosPayload = (response: Response, details: unknown): void => {
+    response.status(400).json({ error: "Invalid chaos payload", details });
+  };
+
+  const sendRoomRoutingFailure = async (
+    roomCode: string,
+    response: Response,
+    operation: string,
+  ): Promise<void> => {
+    const persisted = await storage.load(roomCode);
+    if (persisted) {
+      response.status(503).json({
+        error: `${operation} could not reach the current room owner`,
+        code: "ROOM_OWNER_UNAVAILABLE",
+        roomCode,
+      });
+      return;
+    }
+    response.status(404).json({ error: "Room not found", code: "ROOM_NOT_FOUND", roomCode });
+  };
+
+  const dispatchChaosRequest = async (
+    command: DemoChaosCommand,
+    response: Response,
+  ): Promise<void> => {
+    const ownerRoomCode = command.payload.roomCode?.trim().toUpperCase() ?? null;
+    const result = ownerRoomCode
+      ? await dispatchRoomCommand({ kind: "chaos", roomCode: ownerRoomCode, ...command })
+      : { handled: true, chaos: await executeLocalChaosAction(command, null) };
+    if (!result.handled || !result.chaos) {
+      if (ownerRoomCode) {
+        await sendRoomRoutingFailure(ownerRoomCode, response, "Chaos action");
+      } else {
+        response.status(503).json({ error: "Chaos action failed", code: "CHAOS_ACTION_FAILED" });
+      }
+      return;
+    }
+    response.status(result.chaos.statusCode).json(result.chaos.body);
+  };
+
+  app.post("/api/admin/chaos/lag", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosLagPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "lag", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/full-broadcast", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosFullBroadcastPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "full-broadcast", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/server-shutdown", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosServerShutdownPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "server-shutdown", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/primary-failure", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosPrimaryFailurePayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "primary-failure", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/failover", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosFailoverPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "failover", payload: parsed.data }, response);
+  });
+
+  app.post("/api/admin/chaos/reset", requireChaosAdmin, async (request, response) => {
+    if (await forwardCanaryChaosIfRequested(request, response)) return;
+    const parsed = demoChaosResetPayloadSchema.safeParse(request.body);
+    if (!parsed.success) { rejectInvalidChaosPayload(response, parsed.error.issues); return; }
+    await dispatchChaosRequest({ action: "reset", payload: parsed.data }, response);
+  });
+
+  app.get("/api/ops", async (request, response) => {
+    const requestedChannel = request.query.releaseChannel === "canary" ? "canary" : "stable";
+    if (requestedChannel === "canary" && canaryApiUrl && processReleaseChannel !== "canary") {
+      await forwardCanaryOps(request, response);
+      return;
+    }
+    const requestedRoomCode = request.query.roomCode;
+    if (requestedRoomCode === undefined) {
+      response.json(await getOpsSnapshot());
+      return;
+    }
+    const parsedRoomTarget = demoChaosResetPayloadSchema.safeParse({ roomCode: requestedRoomCode });
+    if (!parsedRoomTarget.success || !parsedRoomTarget.data.roomCode) {
+      response.status(400).json({ error: "Invalid roomCode query" });
+      return;
+    }
+    const roomCode = parsedRoomTarget.data.roomCode.toUpperCase();
+    const result = await dispatchRoomCommand({ kind: "ops", roomCode });
+    if (!result.handled || !result.ops) {
+      await sendRoomRoutingFailure(roomCode, response, "Ops snapshot");
+      return;
+    }
+    response.json(result.ops);
+  });
+  app.get("/api/ops/events", async (_request, response) => {
+    await syncSharedEvents();
+    response.json({ events: events.slice(0, 100) });
+  });
   app.post("/api/ops/events", requireOpsEvent, async (request, response) => {
     const parsed = opsEventSchema.safeParse(request.body);
     if (!parsed.success) { response.status(400).json({ error: "Invalid ops event", details: parsed.error.issues }); return; }
@@ -837,6 +1576,11 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       cluster: payload.cluster ?? null,
       releaseChannel: payload.releaseChannel ?? null,
     });
+    const persisted = await (pendingEventWrites.get(entry.id) ?? Promise.resolve(false));
+    if (!persisted) {
+      response.status(503).json({ accepted: false, error: "Shared ops event persistence failed", event: entry });
+      return;
+    }
     metrics.gameOpsEvents.inc({ type: payload.type, cluster: payload.cluster ?? baseIdentity().cluster, version: payload.version ?? baseIdentity().version });
     if (payload.type === "SLO_BREACH" && process.env.OPS_PLATFORM_WEBHOOK_URL) {
       void fetch(process.env.OPS_PLATFORM_WEBHOOK_URL, {
@@ -949,23 +1693,68 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   io.on("connection", (socket) => {
     socket.on("spectator_subscribe", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
     socket.on("room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => acknowledge?.(await watchRoom(socket, String(payload.roomCode ?? "").toUpperCase(), "watcher")));
-    socket.on("ops.watch", async (acknowledge?: (snapshot: OpsSnapshot) => void) => {
+    socket.on("ops.watch", async (
+      payloadOrAcknowledge?: { roomCode?: string } | ((snapshot: OpsSnapshot) => void),
+      maybeAcknowledge?: (snapshot: OpsSnapshot) => void,
+    ) => {
       const data = socket.data as SocketData;
-      if (data.role !== "admin") data.role = "ops";
+      const acknowledge = typeof payloadOrAcknowledge === "function"
+        ? payloadOrAcknowledge
+        : maybeAcknowledge;
+      const requestedRoomCode = typeof payloadOrAcknowledge === "object"
+        ? payloadOrAcknowledge.roomCode
+        : data.opsRoomCode;
+      if (data.role !== "admin") {
+        data.role = "ops";
+        clientRenderObservations.delete(socket.id);
+      }
       void socket.join("ops");
+      if (requestedRoomCode) {
+        const parsedTarget = demoChaosResetPayloadSchema.safeParse({ roomCode: requestedRoomCode });
+        if (!parsedTarget.success || !parsedTarget.data.roomCode) {
+          socket.emit("ops.error", { error: "Invalid roomCode", code: "INVALID_ROOM_CODE" });
+          return;
+        }
+        const roomCode = parsedTarget.data.roomCode.toUpperCase();
+        const snapshot = await getRoomOwnerOpsSnapshot(roomCode);
+        if (!snapshot) {
+          socket.emit("ops.error", { error: "Room owner unavailable", code: "ROOM_OWNER_UNAVAILABLE", roomCode });
+          return;
+        }
+        data.opsRoomCode = roomCode;
+        acknowledge?.(snapshot);
+        return;
+      }
+      delete data.opsRoomCode;
       acknowledge?.(await getOpsSnapshot());
     });
     socket.on("admin_subscribe", (payload: { token?: string }, acknowledge?: (result: { ok: boolean }) => void) => {
       const ok = demoAdminAuthDisabled || payload.token === adminToken;
-      if (ok) { (socket.data as SocketData).role = "admin"; void socket.join("ops"); }
+      if (ok) {
+        (socket.data as SocketData).role = "admin";
+        clientRenderObservations.delete(socket.id);
+        void socket.join("ops");
+      }
       acknowledge?.({ ok });
     });
     socket.on("admin.room.watch", async (payload: { roomCode?: string }, acknowledge?: (result: WatchResult) => void) => {
-      if ((socket.data as SocketData).role !== "admin") {
+      const data = socket.data as SocketData;
+      if (data.role !== "admin") {
         acknowledge?.({ ok: false, error: "Unauthorized" });
         return;
       }
-      acknowledge?.(await joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase()));
+      const result = await joinRoomChannel(socket, String(payload.roomCode ?? "").toUpperCase());
+      if (result.ok && result.snapshot) {
+        data.opsRoomCode = result.snapshot.roomCode;
+        void getRoomOwnerOpsSnapshot(result.snapshot.roomCode).then((snapshot) => {
+          if (snapshot && (socket.data as SocketData).opsRoomCode === result.snapshot?.roomCode) {
+            socket.emit("ops.snapshot", snapshot);
+          }
+        });
+      } else {
+        delete data.opsRoomCode;
+      }
+      acknowledge?.(result);
     });
     const join = async (rawPayload: unknown, acknowledge?: (result: JoinResult) => void) => {
       const parsed = joinPayloadSchema.safeParse(rawPayload);
@@ -1010,12 +1799,35 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     socket.on("game.input", (payload: unknown, acknowledge?: (result: InputResult) => void) => void processInput(socket, payload, acknowledge));
     socket.on("client_ping", (payload: { sentAt?: number }, acknowledge?: (result: { sentAt: number; serverTimestamp: number }) => void) => {
       const sentAt = numeric(payload?.sentAt, Date.now());
-      const rtt = Math.max(0, Date.now() - sentAt);
-      pushWindow(stats.rttValuesMs, rtt);
       acknowledge?.({ sentAt, serverTimestamp: Date.now() });
+    });
+    socket.on("client_rtt", (payload: { rttMs?: number }) => {
+      const rttMs = numeric(payload?.rttMs, -1);
+      if (rttMs >= 0 && rttMs <= 60_000) pushWindow(stats.rttValuesMs, rttMs);
+    });
+    socket.on("client_render_stats", (
+      rawPayload: unknown,
+      acknowledge?: (result: { ok: boolean; error?: "invalid-payload" | "unauthorized-role" }) => void,
+    ) => {
+      const role = (socket.data as SocketData).role;
+      if (role !== "controller" && role !== "watcher") {
+        acknowledge?.({ ok: false, error: "unauthorized-role" });
+        return;
+      }
+      const parsed = clientRenderStatsPayloadSchema.safeParse(rawPayload);
+      if (!parsed.success) {
+        acknowledge?.({ ok: false, error: "invalid-payload" });
+        return;
+      }
+      clientRenderObservations.set(socket.id, {
+        observedAt: Date.now(),
+        stats: parsed.data,
+      });
+      acknowledge?.({ ok: true });
     });
     socket.on("disconnect", () => {
       stats.disconnects += 1;
+      clientRenderObservations.delete(socket.id);
       const data = socket.data as SocketData;
       if (data.role === "controller" && data.roomCode && data.sessionId) {
         void dispatchRoomCommand({
@@ -1046,10 +1858,13 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     const address = httpServer.address() as AddressInfo;
     boundUrl = `http://127.0.0.1:${address.port}`;
     await recoverAvailableRooms();
-    tickTimer = setInterval(() => void runTicks(), DEFAULT_TICK_INTERVAL_MS);
-    // Every gateway computes the same cluster room summary, but only its local
-    // admin sockets need that sample. Avoid N replicas broadcasting N copies.
-    opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.local.to("ops").emit("ops.snapshot", snapshot)), 1000);
+    tickSchedulerActive = true;
+    nextTickAt = performance.now() + DEFAULT_TICK_INTERVAL_MS;
+    scheduleNextTick();
+    // Each local watcher receives either this process snapshot or the snapshot
+    // from the current owner of its selected room. Grouping by room avoids one
+    // owner RPC per admin browser.
+    opsTimer = setInterval(() => void broadcastOpsSnapshots(), 1000);
     snapshotTimer = setInterval(() => void persistRooms().catch((error) => addEvent("snapshot.failed", error instanceof Error ? error.message : "Snapshot failed", "system")), snapshotIntervalMs);
     leaseTimer = setInterval(() => {
       void maintainLeasesAndRecover().catch((error) => addEvent(
@@ -1073,7 +1888,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     // Bots are part of the live room load. Preserve their sessions in the
     // snapshot so the next authority can recreate them after a rolling update.
     botManager.stopAll(false);
-    if (tickTimer) clearInterval(tickTimer);
+    tickSchedulerActive = false;
+    if (tickTimer) clearTimeout(tickTimer);
     if (opsTimer) clearInterval(opsTimer);
     if (snapshotTimer) clearInterval(snapshotTimer);
     if (leaseTimer) clearInterval(leaseTimer);
@@ -1090,6 +1906,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       await persistRooms();
       for (const room of roomStore.list()) await storage.releaseLease(room.roomCode, ownerId);
     }
+    await Promise.allSettled([...pendingEventWrites.values()]);
     await new Promise<void>((resolve) => io.close(() => resolve()));
     if (httpServer.listening) await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     if (roomCoordinator) await roomCoordinator.close();

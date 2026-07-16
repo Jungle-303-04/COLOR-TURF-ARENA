@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "testedAt": "2026-07-16T12:48:58.030Z",
+  "baseUrl": "http://localhost:8080",
+  "failureMode": "crash",
+  "roomCode": "KLPHV",
+  "matchId": "MATCH-514D1DCE",
+  "nickname": "Failover-QA-af9040",
+  "team": "A",
+  "recoveryTimeMs": 8859,
+  "before": {
+    "cluster": "primary",
+    "podName": "compose-stable-primary",
+    "sequence": 13,
+    "paintedCells": 43,
+    "matchEndsAt": "2026-07-16T12:50:17.428Z"
+  },
+  "persistedBefore": {
+    "sequence": 13,
+    "paintedCells": 43,
+    "snapshotCreatedAt": 1784206128972
+  },
+  "after": {
+    "cluster": "dr",
+    "podName": "compose-stable-dr",
+    "sequence": 15,
+    "paintedCells": 43,
+    "matchEndsAt": "2026-07-16T12:50:17.428Z"
+  },
+  "liveRollback": {
+    "sequence": 0,
+    "paintedCells": 0
+  },
+  "totalTestTimeMs": 10761
+}

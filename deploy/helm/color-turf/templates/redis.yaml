@@ -20,6 +20,9 @@ spec:
         app.kubernetes.io/component: redis
     spec:
       priorityClassName: {{ .Values.priorityClass.name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.redis.podSecurityContext | nindent 8 }}
       containers:
         - name: redis
           image: {{ .Values.redis.image | quote }}
@@ -30,6 +33,10 @@ spec:
             exec: { command: ["redis-cli", "ping"] }
           livenessProbe:
             exec: { command: ["redis-cli", "ping"] }
+          resources:
+            {{- toYaml .Values.redis.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.redis.containerSecurityContext | nindent 12 }}
           volumeMounts:
             - { name: data, mountPath: /data }
       volumes:
