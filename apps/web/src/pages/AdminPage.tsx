@@ -9,6 +9,7 @@ import { StatusPill } from "../components/StatusPill";
 import { ArenaCanvasRenderer } from "../game/arenaCanvas";
 import { api, clearAdminToken, getAdminToken, setAdminToken } from "../lib/api";
 import { formatNumber, formatTime, formatTimer } from "../lib/format";
+import { isRoomRecoveryPending, retryWithBackoff, ROOM_RECOVERY_ACK_TIMEOUT_MS, ROOM_RECOVERY_RETRY_POLICY } from "../lib/retry";
 import { createSocket } from "../lib/socket";
 import { applyStateDelta } from "../lib/state";
 
@@ -49,6 +50,8 @@ interface MetricKpiProps {
 }
 
 const DEFAULT_WORLD_SIZE = 216;
+const WORLD_SIZE_PRESETS = [108, DEFAULT_WORLD_SIZE, 270] as const;
+const PAINT_RADIUS_OPTIONS = [1, 2, 3, 4, 5] as const;
 
 const initialSettings: SettingsState = {
   durationSeconds: 90,
@@ -128,6 +131,7 @@ export const AdminPage = () => {
   const socketRef = useRef<Socket | null>(null);
   const selectedCodeRef = useRef(selectedCode);
   const adminSocketReadyRef = useRef(false);
+  const adminWatchAttemptRef = useRef<AbortController | null>(null);
   const updateCountRef = useRef(0);
 
   const verify = useCallback(async () => {
@@ -199,11 +203,28 @@ export const AdminPage = () => {
   useEffect(() => { void refresh().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "상태를 불러오지 못했습니다.")); }, [refresh]);
 
   const subscribeAdminRoom = useCallback((code: string) => {
+    adminWatchAttemptRef.current?.abort();
+    adminWatchAttemptRef.current = null;
     const socket = socketRef.current;
     if (!code || !socket?.connected || !adminSocketReadyRef.current) return;
-    socket.emit("admin.room.watch", { roomCode: code }, (result: WatchResult) => {
-      if (!result.ok || !result.snapshot) {
-        setError(result.error ?? "관리자 실시간 관제 구독에 실패했습니다.");
+    const controller = new AbortController();
+    adminWatchAttemptRef.current = controller;
+    void retryWithBackoff<WatchResult>(
+      async () => {
+        if (!socket.connected || !adminSocketReadyRef.current) throw new Error("Admin socket disconnected during room recovery");
+        return await socket.timeout(ROOM_RECOVERY_ACK_TIMEOUT_MS).emitWithAck("admin.room.watch", { roomCode: code }) as WatchResult;
+      },
+      {
+        ...ROOM_RECOVERY_RETRY_POLICY,
+        signal: controller.signal,
+        shouldRetry: (result) => !result.ok && isRoomRecoveryPending(result.error),
+      },
+    ).then((outcome) => {
+      if (controller.signal.aborted || adminWatchAttemptRef.current !== controller || outcome.status === "aborted") return;
+      adminWatchAttemptRef.current = null;
+      const result = outcome.status === "complete" || outcome.status === "exhausted" ? outcome.value : undefined;
+      if (!result?.ok || !result.snapshot) {
+        setError(result?.error ?? "관리자 실시간 관제 구독에 실패했습니다.");
         return;
       }
       if (selectedCodeRef.current !== result.snapshot.roomCode) return;
@@ -235,7 +256,13 @@ export const AdminPage = () => {
         subscribeAdminRoom(selectedCodeRef.current);
       });
     });
-    socket.on("disconnect", () => { adminSocketReadyRef.current = false; setStreamConnected(false); setUpdatesPerSecond(0); });
+    socket.on("disconnect", () => {
+      adminWatchAttemptRef.current?.abort();
+      adminWatchAttemptRef.current = null;
+      adminSocketReadyRef.current = false;
+      setStreamConnected(false);
+      setUpdatesPerSecond(0);
+    });
     socket.on("connect_error", () => { setStreamConnected(false); });
     socket.on("ops.snapshot", acceptOpsSnapshot);
     socket.on("room_snapshot", (snapshot: RoomSnapshot) => {
@@ -253,10 +280,12 @@ export const AdminPage = () => {
       setUpdatesPerSecond(updateCountRef.current);
       updateCountRef.current = 0;
     }, 1000);
-    const resyncTimer = window.setInterval(() => subscribeAdminRoom(selectedCodeRef.current), 5000);
+    const resyncTimer = window.setInterval(() => subscribeAdminRoom(selectedCodeRef.current), 15000);
     return () => {
       window.clearInterval(rateTimer);
       window.clearInterval(resyncTimer);
+      adminWatchAttemptRef.current?.abort();
+      adminWatchAttemptRef.current = null;
       adminSocketReadyRef.current = false;
       if (socketRef.current === socket) socketRef.current = null;
       socket.disconnect();
@@ -267,8 +296,8 @@ export const AdminPage = () => {
     if (!room) return;
     setSettings({
       durationSeconds: room.config.durationSeconds,
-      gridWidth: DEFAULT_WORLD_SIZE,
-      gridHeight: DEFAULT_WORLD_SIZE,
+      gridWidth: room.config.gridWidth,
+      gridHeight: room.config.gridWidth,
       paintRadius: room.config.paintRadius,
       releaseChannel: room.config.releaseChannel,
       colorA: room.config.teams.A.color,
@@ -336,6 +365,10 @@ export const AdminPage = () => {
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("tab", tab);
     window.history.replaceState({}, "", nextUrl);
+  };
+
+  const setSquareGridSize = (size: number) => {
+    setSettings((current) => ({ ...current, gridWidth: size, gridHeight: size }));
   };
 
   const run = async (task: () => Promise<unknown>, success: string) => {
@@ -423,7 +456,32 @@ export const AdminPage = () => {
         <aside className="room-rail panel">
           <div className="panel-heading"><div><span className="panel-kicker">경기방</span><h2>경기장 목록</h2></div><span className="count-badge">{rooms.length}</span></div>
           <div className="room-list">{rooms.length === 0 && <p className="empty-copy">아직 생성된 방이 없습니다.</p>}{rooms.map((item) => <button type="button" key={item.roomCode} className={`room-list-item ${selectedCode === item.roomCode ? "is-selected" : ""}`} onClick={() => selectRoom(item.roomCode)}><span><b>{item.roomCode}</b><small>{item.releaseChannel.toUpperCase()} · {item.connectedPlayers}/{item.players}명 연결</small></span><StatusPill status={item.status} locale="ko" /></button>)}</div>
-          <div className="compact-create-fields"><label><span>배포 채널</span><select value={settings.releaseChannel} onChange={(event) => setSettings({ ...settings, releaseChannel: event.target.value as "stable" | "canary" })}><option value="stable">Stable v1.1.3 · 델타 전송</option><option value="canary">Canary v1.2.0 · 전체 전송</option></select></label><label><span>경기 시간(초)</span><input type="number" min="15" max="300" value={settings.durationSeconds} onChange={(event) => setSettings({ ...settings, durationSeconds: Number(event.target.value) })} /></label></div>
+          <section className="create-room-settings" aria-labelledby="create-room-settings-title">
+            <div className="create-room-settings-heading">
+              <div><span className="panel-kicker">생성 옵션</span><h3 id="create-room-settings-title">새 경기장 설정</h3></div>
+              <span className="square-size-badge">{settings.gridWidth} × {settings.gridHeight}</span>
+            </div>
+            <div className="compact-create-fields">
+              <label className="create-field-wide"><span>배포 채널</span><select value={settings.releaseChannel} onChange={(event) => setSettings({ ...settings, releaseChannel: event.target.value as "stable" | "canary" })}><option value="stable">Stable v1.1.3 · 델타 전송</option><option value="canary">Canary v1.2.0 · 전체 전송</option></select></label>
+              <label><span>경기 시간(초)</span><input type="number" min="15" max="300" value={settings.durationSeconds} onChange={(event) => setSettings({ ...settings, durationSeconds: Number(event.target.value) })} /></label>
+              <label><span>정사각형 맵 크기</span><div className="square-size-input"><input type="number" min="40" max="270" value={settings.gridWidth} aria-describedby="square-size-hint" onChange={(event) => setSquareGridSize(Number(event.target.value))} /><span>× {settings.gridHeight}</span></div></label>
+              <div className="create-field-wide square-size-presets" role="group" aria-label="맵 크기 빠른 선택">
+                {WORLD_SIZE_PRESETS.map((size) => <button type="button" key={size} className={settings.gridWidth === size ? "is-selected" : ""} aria-pressed={settings.gridWidth === size} onClick={() => setSquareGridSize(size)}>{size}×{size}</button>)}
+              </div>
+              <small className="create-field-wide create-field-hint" id="square-size-hint">한 값이 가로·세로에 함께 적용됩니다. 40~270칸</small>
+              <div className="create-field-wide paint-radius-field">
+                <div className="create-field-label"><span>페인트 반경</span><strong>{settings.paintRadius}칸</strong></div>
+                <div className="paint-radius-options" role="group" aria-label="페인트 반경 선택">
+                  {PAINT_RADIUS_OPTIONS.map((radius) => <button type="button" key={radius} className={settings.paintRadius === radius ? "is-selected" : ""} aria-pressed={settings.paintRadius === radius} onClick={() => setSettings((current) => ({ ...current, paintRadius: radius }))}>{radius}</button>)}
+                </div>
+                <small className="create-field-hint">플레이어 중심에서 한 번에 칠하는 범위</small>
+              </div>
+              <div className="create-field-wide team-color-grid" role="group" aria-label="팀 색상 설정">
+                <label className="team-color-field team-color-a"><span>팀 A 색상</span><div><input type="color" value={settings.colorA} aria-label="팀 A 색상 선택" onChange={(event) => setSettings({ ...settings, colorA: event.target.value })} /><code>{settings.colorA.toUpperCase()}</code></div></label>
+                <label className="team-color-field team-color-b"><span>팀 B 색상</span><div><input type="color" value={settings.colorB} aria-label="팀 B 색상 선택" onChange={(event) => setSettings({ ...settings, colorB: event.target.value })} /><code>{settings.colorB.toUpperCase()}</code></div></label>
+              </div>
+            </div>
+          </section>
           <button className="button button-primary button-block" type="button" onClick={() => void createRoom()} disabled={busy}>＋ 새 경기장 만들기</button>
         </aside>
 

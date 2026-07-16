@@ -41,6 +41,8 @@ Prometheus를 함께 실행하려면 다음 profile을 쓴다.
 
 ```powershell
 docker compose --profile observability up --build -d
+# 또는 LAN 주소 자동 설정과 함께
+.\scripts\start-demo.ps1 -Observability
 ```
 
 종료 시 Redis volume을 보존하려면 `stop`, 모두 삭제하려면 `down`을 사용한다.
@@ -105,10 +107,21 @@ docker compose --profile load up --build bot
 - Room lease는 `SET NX PX`와 owner 일치 Lua 갱신/해제로 단일 writer를 보호한다.
 - 소유권을 잃은 authority는 즉시 해당 Room을 내리고 연결을 끊는다. 대기 authority는 2초마다 재시도해 7초 lease 만료 뒤 최신 Snapshot을 재획득한다.
 - 서버 시작 시 최신 Snapshot을 복원하며, 기존 `matchEndsAt`, Grid, 점수, 팀과 위치를 유지한다.
-- 관리자 `PRIMARY FAILURE → DR`은 Socket을 실제 종료하고 Redis Snapshot을 다시 읽은 뒤 서버 identity를 `DR`로 변경한다. 클라이언트는 별도 버튼·새로고침 없이 같은 Session으로 재접속한다.
+- 기본 Compose는 Stable과 별도 DR 대기 프로세스를 함께 실행한다. Web Nginx는 Stable을 우선 사용하고, Stable 연결 실패 시 같은 공개 URL의 새 HTTP/WebSocket handshake를 DR로 전달한다.
+- `docker compose stop server-stable`로 실제 Primary 프로세스를 종료하면 기존 Socket이 끊기고, 클라이언트가 같은 Session으로 자동 재접속하는 동안 DR이 Redis Snapshot과 Room lease를 인계받는다. 기존 연결을 무중단으로 넘기는 방식은 아니다.
+- 참가·관전·관리자 구독은 DR이 lease를 얻기 전 `Room not found`가 먼저 와도 최대 8회 bounded backoff로 다시 시도한다. 화면을 떠나거나 Socket이 끊기면 진행 중인 재시도는 취소한다.
+- 최근 운영 이벤트는 Redis 공유 로그에 최대 200개를 보관하므로 Stable에서 기록한 `PRIMARY_UNHEALTHY`, `FAILOVER_STARTED`도 DR의 관리자·관제 타임라인에서 이어진다.
 - 데이터 손실 가능 범위는 Snapshot 주기만큼이므로 `RPO 0` 또는 완전 무중단이라고 표현하지 않는다.
 
-로컬 Compose의 Chaos 버튼은 한 프로세스에서 실제 Redis 복구 경로와 연결 재설정을 검증한다. 실제 두 Kubernetes 클러스터 간 DNS/LB 전환은 외부 운영 플랫폼이 담당해야 한다.
+같은 8080 URL의 실제 Compose failover를 자동 확인하려면 실행 중인 데모에서 다음 명령을 사용한다. 기본값은 Stable을 `SIGKILL`로 비정상 종료한다. 스크립트는 장애 직전 Redis Snapshot을 함께 캡처하고, DR에서 같은 match/team/nickname/`matchEndsAt`과 Snapshot 이상의 sequence·paint가 복구되는지 확인한 뒤 Stable을 다시 시작한다.
+
+```powershell
+node .\scripts\verify-compose-failover.mjs | Tee-Object .\compose-failover-result.json
+```
+
+정상 종료 경로도 별도로 확인하려면 `$env:FAILOVER_FAILURE_MODE='graceful'`을 설정한다.
+
+실제 두 cluster 사이의 Service/DNS/LB 전환과 양쪽에서 접근 가능한 외부/복제 Redis는 운영 플랫폼 책임이다.
 
 ## Stable과 Canary
 
@@ -119,7 +132,7 @@ docker compose --profile load up --build bot
 | Stable | `v1.1.3` | Delta | 0ms |
 | Canary | `v1.2.0` | Full Grid | 시연 시 250~350ms |
 
-기본 Compose는 Redis, Stable authority, Web을 실행한다. 선택적으로 별도 Canary/DR 프로세스도 띄울 수 있고, DR은 Stable이 lease를 놓거나 만료되면 Room Snapshot을 재획득한다.
+기본 Compose는 Redis, Stable authority, DR standby, Web을 실행한다. `topology` profile은 별도 Canary 프로세스를 추가한다. DR은 Stable이 lease를 놓거나 만료되면 Room Snapshot을 재획득한다.
 
 ```powershell
 docker compose --profile topology up --build -d
@@ -127,7 +140,7 @@ curl.exe http://localhost:3002/version  # canary
 curl.exe http://localhost:3003/version  # dr
 ```
 
-현재 로컬 UI 트래픽은 단일 `server-stable` authority를 거치며 Room별 Stable/Canary 직렬화 모드를 비교한다. 실제 Service/Ingress별 Room routing은 운영 플랫폼 또는 Gateway 통합 범위다.
+로컬 공개 URL은 Stable 우선/DR 백업 gateway를 사용한다. 관리자에서 만든 Canary Room은 Stable authority 안에서 실제 Full Grid 직렬화 모드를 적용해 Payload·Tick 부하를 비교한다. 별도 `server-canary` Pod/컨테이너는 `3002`와 Prometheus에서 직접 검증하며, Room별 Canary Service 라우팅은 운영 플랫폼 또는 Gateway 통합 범위다.
 
 ## 운영 플랫폼 이벤트 API
 
@@ -180,6 +193,11 @@ kubectl kustomize .\deploy\k8s
 이미지를 build/load한 뒤 Primary를 설치한다.
 
 ```powershell
+kubectl create namespace color-turf --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n color-turf create secret generic color-turf-auth `
+  --from-literal=ADMIN_TOKEN='change-me' `
+  --from-literal=OPS_EVENT_TOKEN='change-me-too'
+
 helm upgrade --install color-turf .\deploy\helm\color-turf `
   --namespace color-turf --create-namespace `
   -f .\deploy\helm\color-turf\values-primary.yaml
@@ -207,14 +225,16 @@ Chart에는 Stable/Canary Deployment와 Service, Web, Redis, 선택적 Bot, Ingr
 - [아키텍처와 상태 경계](docs/architecture.md)
 - [5분 시연 Runbook](docs/demo-runbook.md)
 - [검증 기록](docs/verification.md)
+- [외부 장비·Kubernetes 검증 체크리스트](docs/external-verification-runbook.md)
 - [오픈소스 후보 평가](docs/open-source-evaluation.md)
 - [제3자 고지](THIRD_PARTY_NOTICES.md)
 
 ## 현재 제한사항
 
 - 실제 휴대폰·발표장 Wi-Fi, 실제 Primary/DR cluster의 외부 LB/DNS 전환은 해당 환경에서 별도 검증해야 한다.
-- Redis는 Room Snapshot과 lease를 제공하지만 Socket.IO Redis adapter는 아직 사용하지 않는다. Room은 단일 authority가 소유한다.
-- Compose의 선택형 Canary/DR 프로세스는 이미지·환경·metrics 비교용이다. UI의 Room별 endpoint routing은 단일 authority 안에서 시연한다.
+- Socket.IO gateway와 Room 명령 전달은 Redis adapter/command bus를 사용하지만, 각 Room의 게임 Tick은 lease를 가진 단일 authority만 수행한다.
+- 실제 Primary/DR 두 cluster는 양쪽에서 접근 가능한 외부 또는 복제 Redis와 동일한 인증 Secret이 필요하다. 기본 Chart의 cluster-local Redis를 두 cluster에 각각 설치하면 DR Snapshot 공유가 되지 않는다.
+- 별도 Canary Service는 배포·직접 metrics 비교용이다. 공개 Room별 Canary Service routing은 운영 플랫폼 또는 Gateway 통합 범위다.
 - E2E 브라우저 자동화는 포함하지 않았으며, 현재 브라우저 검증은 수동 QA 기록으로 남긴다.
 
 ## 오픈소스

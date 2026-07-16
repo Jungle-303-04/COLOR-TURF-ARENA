@@ -232,6 +232,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     message: "실제 메모리 장애를 주입하지 않았습니다.",
   };
   const announcementTimers = new Map<string, NodeJS.Timeout>();
+  const pendingEventWrites = new Map<string, Promise<boolean>>();
 
   const baseIdentity = (): ServerIdentity => ({
     version: stableVersion,
@@ -267,6 +268,24 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     };
     events.unshift(entry);
     if (events.length > 200) events.length = 200;
+    const persistence = storage.appendEvent(entry)
+      .then(() => true)
+      .catch((error: unknown) => {
+        if (process.env.NODE_ENV !== "test") {
+          console.error(JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "error",
+            message: "shared ops event persistence failed",
+            eventId: entry.id,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+        }
+        return false;
+      });
+    pendingEventWrites.set(entry.id, persistence);
+    void persistence.finally(() => {
+      if (pendingEventWrites.get(entry.id) === persistence) pendingEventWrites.delete(entry.id);
+    });
     io.emit("ops_event", entry);
     if (process.env.NODE_ENV !== "test") {
       console.log(JSON.stringify({
@@ -284,6 +303,28 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       }));
     }
     return entry;
+  };
+
+  const syncSharedEvents = async (): Promise<void> => {
+    try {
+      const sharedEvents = await storage.loadRecentEvents(200);
+      const merged = new Map<string, EventLogEntry>();
+      for (const entry of events) merged.set(entry.id, entry);
+      for (const entry of sharedEvents) if (!merged.has(entry.id)) merged.set(entry.id, entry);
+      const ordered = [...merged.values()]
+        .sort((left, right) => (Date.parse(right.at) || 0) - (Date.parse(left.at) || 0))
+        .slice(0, 200);
+      events.splice(0, events.length, ...ordered);
+    } catch (error) {
+      if (process.env.NODE_ENV !== "test") {
+        console.error(JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "error",
+          message: "shared ops event load failed",
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
   };
 
   const roomStore = new MemoryRoomStore((roomCode: string, event: GameEvent) => {
@@ -352,6 +393,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   });
 
   const getOpsSnapshot = async (): Promise<OpsSnapshot> => {
+    await syncSharedEvents();
     const now = Date.now();
     const cpuUsage = process.cpuUsage();
     const wallMicros = Math.max(1, (now - lastCpuSampleAt) * 1000);
@@ -842,7 +884,10 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   });
 
   app.get("/api/ops", async (_request, response) => response.json(await getOpsSnapshot()));
-  app.get("/api/ops/events", (_request, response) => response.json({ events: events.slice(0, 100) }));
+  app.get("/api/ops/events", async (_request, response) => {
+    await syncSharedEvents();
+    response.json({ events: events.slice(0, 100) });
+  });
   app.post("/api/ops/events", requireOpsEvent, async (request, response) => {
     const parsed = opsEventSchema.safeParse(request.body);
     if (!parsed.success) { response.status(400).json({ error: "Invalid ops event", details: parsed.error.issues }); return; }
@@ -854,6 +899,11 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       cluster: payload.cluster ?? null,
       releaseChannel: payload.releaseChannel ?? null,
     });
+    const persisted = await (pendingEventWrites.get(entry.id) ?? Promise.resolve(false));
+    if (!persisted) {
+      response.status(503).json({ accepted: false, error: "Shared ops event persistence failed", event: entry });
+      return;
+    }
     metrics.gameOpsEvents.inc({ type: payload.type, cluster: payload.cluster ?? baseIdentity().cluster, version: payload.version ?? baseIdentity().version });
     if (payload.type === "SLO_BREACH" && process.env.OPS_PLATFORM_WEBHOOK_URL) {
       void fetch(process.env.OPS_PLATFORM_WEBHOOK_URL, {
@@ -1110,6 +1160,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       await persistRooms();
       for (const room of roomStore.list()) await storage.releaseLease(room.roomCode, ownerId);
     }
+    await Promise.allSettled([...pendingEventWrites.values()]);
     await new Promise<void>((resolve) => io.close(() => resolve()));
     if (httpServer.listening) await new Promise<void>((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
     if (roomCoordinator) await roomCoordinator.close();

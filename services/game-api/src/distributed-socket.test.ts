@@ -36,6 +36,7 @@ describeRedis("Redis-backed multi-replica room gateway", () => {
       redisUrl,
       podName: "game-server-a",
       adminToken: "test-admin",
+      opsEventToken: "test-ops",
       snapshotIntervalMs: 250,
     });
     const runningAuthority = await authority.start(0, "127.0.0.1");
@@ -66,6 +67,7 @@ describeRedis("Redis-backed multi-replica room gateway", () => {
       redisUrl,
       podName: "game-server-b",
       adminToken: "test-admin",
+      opsEventToken: "test-ops",
       snapshotIntervalMs: 250,
     });
     const runningGateway = await gateway.start(0, "127.0.0.1");
@@ -138,6 +140,18 @@ describeRedis("Redis-backed multi-replica room gateway", () => {
     }
     expect(botsJoined).toBe(2);
 
+    for (const event of [
+      { type: "PRIMARY_UNHEALTHY", message: "Primary health check failed", cluster: "primary" },
+      { type: "FAILOVER_STARTED", message: "Routing traffic to DR", cluster: "dr" },
+    ]) {
+      const response = await fetch(`${runningAuthority.url}/api/ops/events`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-ops", "content-type": "application/json" },
+        body: JSON.stringify(event),
+      });
+      expect(response.status).toBe(202);
+    }
+
     await authorityStop();
     stops.splice(stops.indexOf(authorityStop), 1);
 
@@ -155,6 +169,21 @@ describeRedis("Redis-backed multi-replica room gateway", () => {
     expect(recovered?.server.podName).toBe("game-server-b");
     expect(recovered?.players.filter((player) => player.isBot && player.connected)).toHaveLength(2);
     expect(controller.connected).toBe(true);
+
+    const drOps = await (await fetch(`${runningGateway.url}/api/ops`)).json() as {
+      recentEvents: Array<{ type: string; message: string }>;
+    };
+    expect(drOps.recentEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "PRIMARY_UNHEALTHY",
+      "FAILOVER_STARTED",
+    ]));
+    const drTimeline = await (await fetch(`${runningGateway.url}/api/ops/events`)).json() as {
+      events: Array<{ type: string }>;
+    };
+    expect(drTimeline.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "PRIMARY_UNHEALTHY",
+      "FAILOVER_STARTED",
+    ]));
 
     const continued = await emitAck<InputResult>(controller, "game.input", {
       roomCode: created.room.roomCode,

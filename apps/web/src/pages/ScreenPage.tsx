@@ -7,6 +7,7 @@ import { StatusPill } from "../components/StatusPill";
 import { ArenaCanvasRenderer } from "../game/arenaCanvas";
 import { api } from "../lib/api";
 import { formatTime, formatTimer } from "../lib/format";
+import { isRoomRecoveryPending, retryWithBackoff, ROOM_RECOVERY_ACK_TIMEOUT_MS, ROOM_RECOVERY_RETRY_POLICY } from "../lib/retry";
 import { createSocket } from "../lib/socket";
 import { applyStateDelta } from "../lib/state";
 
@@ -25,18 +26,53 @@ export const ScreenPage = () => {
   useEffect(() => {
     void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
     const socket = createSocket();
-    const watch = () => socket.emit("spectator_subscribe", { roomCode }, (result: WatchResult) => {
-      if (result.ok && result.snapshot) { setSnapshot(result.snapshot); setError(""); }
-      else setError(result.error ?? "방을 찾지 못했습니다.");
+    let watchAttempt: AbortController | null = null;
+    const watch = () => {
+      watchAttempt?.abort();
+      const controller = new AbortController();
+      watchAttempt = controller;
+      setConnected(false);
+      setError("");
+      void retryWithBackoff<WatchResult>(
+        async () => {
+          if (!socket.connected) throw new Error("Socket disconnected during room recovery");
+          return await socket.timeout(ROOM_RECOVERY_ACK_TIMEOUT_MS).emitWithAck("spectator_subscribe", { roomCode }) as WatchResult;
+        },
+        {
+          ...ROOM_RECOVERY_RETRY_POLICY,
+          signal: controller.signal,
+          shouldRetry: (result) => !result.ok && isRoomRecoveryPending(result.error),
+        },
+      ).then((outcome) => {
+        if (controller.signal.aborted || watchAttempt !== controller || outcome.status === "aborted") return;
+        watchAttempt = null;
+        const result = outcome.status === "complete" || outcome.status === "exhausted" ? outcome.value : undefined;
+        if (result?.ok && result.snapshot) {
+          setSnapshot(result.snapshot);
+          setConnected(true);
+          setError("");
+          return;
+        }
+        setConnected(false);
+        setError(result?.error ?? "게임 서버가 방 상태를 복구하지 못했습니다.");
+      });
+    };
+    socket.on("connect", watch);
+    socket.on("disconnect", () => {
+      watchAttempt?.abort();
+      watchAttempt = null;
+      setConnected(false);
     });
-    socket.on("connect", () => { setConnected(true); watch(); });
-    socket.on("disconnect", () => setConnected(false));
     socket.on("room_snapshot", (next: RoomSnapshot) => setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current));
     socket.on("state_delta", (delta: StateDelta) => setSnapshot((current) => applyStateDelta(current, delta)));
     socket.on("ops_event", (event: EventLogEntry) => setTimeline((current) => [event, ...current.filter((item) => item.id !== event.id)].slice(0, 8)));
     socket.connect();
     void api.ops().then((ops) => setTimeline(ops.recentEvents.slice(0, 8))).catch(() => undefined);
-    return () => { socket.disconnect(); };
+    return () => {
+      watchAttempt?.abort();
+      watchAttempt = null;
+      socket.disconnect();
+    };
   }, [roomCode]);
 
   useEffect(() => {

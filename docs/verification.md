@@ -9,12 +9,12 @@
 | 항목 | 결과 | 실행 증거 |
 | --- | --- | --- |
 | TypeScript | PASS | `npm run typecheck`: shared, game-api, bot, web 모두 exit 0 |
-| 테스트 | PASS | `npm test`: game-api 16 passed / Redis integration 1 skipped, web 8 passed |
-| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 97 modules build |
-| Compose | PASS | `docker compose config --quiet`, 이미지 빌드, Redis/server-stable/frontend 모두 healthy |
+| 테스트 | PASS | `npm test`: game-api 19 passed / Redis integration 1 skipped, web 17 passed |
+| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 99 modules build |
+| Compose 정적 구성 | PASS | `docker compose config --quiet`, 기본 서비스가 Redis/Stable/DR/Web으로 해석됨. Docker Engine이 꺼져 있어 이번 변경의 이미지·runtime은 재실행하지 않음 |
 | Kustomize | PASS | `kubectl kustomize deploy/k8s` exit 0 |
-| Helm | PASS | 기본·Primary·Canary values에 대해 `helm lint`와 `helm template` exit 0 |
-| PowerShell 도구 | PASS | `scripts/*.ps1` PowerShell parser error 0 |
+| Helm | PASS | 기본·Primary·Canary-bad·DR values에 대해 `helm lint`와 `helm template` exit 0 |
+| PowerShell 도구 | PASS | `scripts/*.ps1` 5개 PowerShell parser error 0 |
 
 테스트는 경기 lifecycle·점수·마감 시각, 입력 sequence·stale·rate limit, Redis 호환 snapshot/lease, 실제 Socket.IO client 두 개의 join/input/delta 흐름을 포함한다.
 
@@ -25,6 +25,10 @@
 - 플레이어 좌표는 30Hz 서버 상태 사이를 약 33ms 동안 보간하며, 시작·중간·종료 좌표와 범위 제한을 단위 테스트했다. 판정 좌표는 서버 상태를 그대로 유지한다.
 - Windows 로컬 서버에서 `/api/config`의 `tickRateHz=30`을 확인하고 실제 Socket.IO 관전자 Delta를 3.007초 동안 측정했다. 90회가 수신되어 `29.93 updates/s`였으며, 누적 시간 오차를 보정하는 Tick 스케줄러가 설정 주기를 실제 전송에도 유지함을 확인했다.
 - 관리자 화면은 게임 관전, 게임·봇 제어, 운영 지표를 세 탭으로 분리한다. 지표 카드는 30Hz Tick 예산과 입력·이벤트 루프·CPU 임계치를 상태 색상으로 표시하며, 각 `?` 툴팁은 `/api/config`, `/api/ops`, Node.js 런타임 또는 Kubernetes API 중 실제 출처를 명시한다.
+- 새 경기장 설정은 108/216/270 정사각형 맵 프리셋과 직접 크기 입력, 페인트 반경, A/B 팀 색상을 제공한다. 가로·세로는 항상 같은 값으로 서버 생성 API에 전달한다.
+- 참가 닉네임을 비워도 payload에서 nickname을 생략하며, 서버가 만든 `Guest-N`을 화면·재접속 Session·localStorage에 저장한다. 명시한 닉네임은 앞뒤 공백을 제거한다.
+- `/ops`는 기존 처리량·Tick·CPU·메모리뿐 아니라 실제 `OpsSnapshot`의 입력 지연 P95, Event Loop P95, reconnect/disconnect 누계, uptime을 한국어 카드와 출처 툴팁으로 표시한다.
+- 참가자 `join/resume`, 관전자 구독, 관리자 실시간 구독은 DR lease 공백 동안 `Room not found` 또는 ACK timeout을 bounded exponential backoff로 재시도한다. 재시도 성공·상한·timeout·abort·지연 계산을 웹 단위 테스트로 고정했다.
 - Compose 방 `A87XN`에 관리 API로 실제 WebSocket 봇 100개를 한 번에 요청했다. 6초 측정 시 98 players, 104 sockets, 340 inputs/s, input P95 246ms, tick P95 0.24ms, event-loop P95 43.97ms, CPU 100%, RSS 210.40MB가 `/api/ops`에 기록됐다. 이후 500개 회수 명령으로 봇 수 0을 확인했다.
 - 최종 이미지 재기동 후 방 `2CXQU`에 봇 50개를 요청해 50개 모두 연결, 442 inputs/s, input P95 59ms, tick P95 0.14ms를 확인했고 전부 회수했다.
 - 공지는 전체 Grid Snapshot 대신 `state_delta`로 즉시 전송되며, 자동 테스트와 Compose 런타임 모두에서 약 2초 표시 후 3초 시점에 `announcement=null`로 제거되는 것을 확인했다.
@@ -37,10 +41,17 @@
 - `server-stable` 컨테이너를 재시작한 뒤 Redis에서 같은 방과 player/team, painted cell, sequence가 복구됐다.
 - 관리 API로 실제 Socket.IO Bot 2개를 추가하고 `isBot=true` player 2명이 접속하는 것을 확인했다.
 - Paint Boost를 켜고 활성 이벤트가 snapshot과 화면에 노출되는 것을 확인했다.
-- Primary failure 시뮬레이션은 Redis에 저장한 snapshot을 다시 읽었고 `PRIMARY_UNHEALTHY → FAILOVER_STARTED → SNAPSHOT_RESTORED → FAILOVER_COMPLETED` 순서를 기록했다.
 - `/healthz`, `/readyz`, `/version`, `/metrics`를 확인했다. 준비 상태는 `store=redis`였고 요구된 game tick, broadcast, payload, queue delay, connection, player, room, reconnect, snapshot, recovery, changed-cell, ops-event metric이 모두 노출됐다.
 - Stable과 별도 DR 컨테이너를 동시에 실행했다. Stable을 정상 종료하자 DR이 방 `FMLNX`를 2.57초 만에 인계받았고, Stable을 강제 종료해 lease를 남겼을 때는 방 `VY6KL`을 8.2초 만에 인계받았다. 두 경우 모두 같은 room code와 snapshot 상태를 유지했다.
 - lease는 2초마다 갱신된다. 소유권을 잃은 authority는 방을 즉시 내리고 client를 재접속시키며, 대기 authority는 7초 TTL 만료 뒤 Redis snapshot을 재획득한다.
+
+### 2026-07-16 공개 URL DR 경로 보강
+
+- Web Nginx에 `server-stable` 우선, `server-dr` backup upstream을 적용해 HTTP와 새 WebSocket handshake가 같은 `:8080` 공개 URL에서 DR로 넘어가도록 구성했다.
+- 기본 Compose에 DR을 포함하고 Web readiness가 Stable과 DR 모두를 기다리도록 했으며, Prometheus도 DR `/metrics`를 수집한다.
+- 최근 운영 이벤트는 Snapshot storage의 Redis 공유 로그에 최대 200개를 저장하고, `/api/ops`와 `/api/ops/events`가 최신 로그를 merge/dedupe한다. Platform event POST는 저장 완료 뒤 202를 반환하며, Stable 종료 뒤 DR에서도 이전 장애 이벤트가 남는 Redis 통합 테스트를 추가했다.
+- `scripts/verify-compose-failover.mjs`는 실제 방·Socket Session·채색 상태와 Redis Snapshot을 만든 뒤 기본적으로 Stable 컨테이너를 `SIGKILL`하고, DR에서 match/team/nickname/score/`matchEndsAt` 및 Snapshot 이상의 sequence·paint와 `/version`이 복구되는지 검사한 후 Stable을 복원한다. graceful 모드도 선택할 수 있으며 `node --check`는 통과했다.
+- 이번 턴에는 사용자의 서버 종료 요청을 유지했고 Docker Engine도 꺼져 있어 이 새 공개 URL failover 스크립트를 runtime으로 실행하지 않았다. 실행·증거 수집 절차는 `docs/external-verification-runbook.md`에 분리했다.
 
 ## 2026-07-14 브라우저 검증 기록(레이아웃 확장 전)
 
@@ -73,4 +84,4 @@
 
 ## 현재 실행 상태
 
-검증을 위해 임시 실행한 로컬 API(3001)와 Web(5173)은 모두 종료했고 두 포트가 Listen 상태가 아님을 확인했다. Docker Desktop도 현재 실행 중이 아니며 Compose·Kubernetes 증거는 위에 기록한 7월 15일 검증 결과다.
+검증을 위해 임시 실행한 로컬 API(3001), Web(5173), Compose Web(8080), Prometheus(9090)는 모두 종료했고 네 포트가 Listen 상태가 아님을 확인했다. Docker Desktop도 현재 실행 중이 아니며 Compose·Kubernetes runtime 증거는 위에 기록한 7월 15일 검증 결과다.

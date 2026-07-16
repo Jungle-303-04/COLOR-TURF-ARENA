@@ -8,6 +8,8 @@ x-server-environment: &server-environment
   SNAPSHOT_INTERVAL_MS: ${SNAPSHOT_INTERVAL_MS:-1000}
   ADMIN_TOKEN: ${ADMIN_TOKEN:-demo-admin}
   OPS_EVENT_TOKEN: ${OPS_EVENT_TOKEN:-demo-ops}
+  OPS_PLATFORM_WEBHOOK_URL: ${OPS_PLATFORM_WEBHOOK_URL:-}
+  OPS_PLATFORM_WEBHOOK_TOKEN: ${OPS_PLATFORM_WEBHOOK_TOKEN:-}
   GIT_SHA: ${GIT_SHA:-local}
   CANARY_SERVER_VERSION: ${CANARY_SERVER_VERSION:-v1.2.0}
   DEMO_AUTO_SEED: ${DEMO_AUTO_SEED:-false}
@@ -74,7 +76,11 @@ services:
 
   server-dr:
     <<: *server-base
-    profiles: ["topology"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      server-stable:
+        condition: service_healthy
     environment:
       <<: *server-environment
       SERVER_VERSION: ${SERVER_VERSION:-v1.1.3}
@@ -94,6 +100,8 @@ services:
     image: color-turf-web:${IMAGE_TAG:-local}
     depends_on:
       server-stable:
+        condition: service_healthy
+      server-dr:
         condition: service_healthy
     ports:
       - "8080:8080"
