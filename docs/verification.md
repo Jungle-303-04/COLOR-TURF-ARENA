@@ -1,6 +1,6 @@
 # Color Turf Arena 검증 기록
 
-검증일: 2026-07-15 (Asia/Seoul)
+검증일: 2026-07-16 (Asia/Seoul)
 
 이 문서는 현재 checkout에서 직접 실행한 결과를 기록한다. 로컬에서 입증한 항목과 물리 휴대폰, 실제 Kubernetes 클러스터, 외부 트래픽 전환이 필요한 항목을 구분한다.
 
@@ -9,8 +9,8 @@
 | 항목 | 결과 | 실행 증거 |
 | --- | --- | --- |
 | TypeScript | PASS | `npm run typecheck`: shared, game-api, bot, web 모두 exit 0 |
-| 테스트 | PASS | `npm test` + 카메라 추가 검증: game-api 9 tests, web 6 tests passed |
-| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 96 modules build |
+| 테스트 | PASS | `npm test`: game-api 15 passed / Redis integration 1 skipped, web 8 passed |
+| 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 97 modules build |
 | Compose | PASS | `docker compose config --quiet`, 이미지 빌드, Redis/server-stable/frontend 모두 healthy |
 | Kustomize | PASS | `kubectl kustomize deploy/k8s` exit 0 |
 | Helm | PASS | 기본·Primary·Canary values에 대해 `helm lint`와 `helm template` exit 0 |
@@ -28,7 +28,7 @@
 - Compose 방 `A87XN`에 관리 API로 실제 WebSocket 봇 100개를 한 번에 요청했다. 6초 측정 시 98 players, 104 sockets, 340 inputs/s, input P95 246ms, tick P95 0.24ms, event-loop P95 43.97ms, CPU 100%, RSS 210.40MB가 `/api/ops`에 기록됐다. 이후 500개 회수 명령으로 봇 수 0을 확인했다.
 - 최종 이미지 재기동 후 방 `2CXQU`에 봇 50개를 요청해 50개 모두 연결, 442 inputs/s, input P95 59ms, tick P95 0.14ms를 확인했고 전부 회수했다.
 - 공지는 전체 Grid Snapshot 대신 `state_delta`로 즉시 전송되며, 자동 테스트와 Compose 런타임 모두에서 약 2초 표시 후 3초 시점에 `announcement=null`로 제거되는 것을 확인했다.
-- 내장 브라우저 자동 QA는 도구 초기화 오류로 수행하지 못했다. 대신 frontend HTTP 200, 프로덕션 빌드, Canvas 카메라 계산 테스트와 실제 Socket/API 흐름을 검증했다. 물리 휴대폰 시각·터치 검증은 아래 외부 환경 항목으로 남긴다.
+- 7월 15일 최초 내장 브라우저 자동 QA 시도는 도구 초기화 오류가 있었지만, 7월 16일 재검증에서는 아래 관리자·참가자 핵심 흐름을 실제 브라우저로 완료했다. 물리 휴대폰 시각·터치 검증은 아래 외부 환경 항목으로 남긴다.
 
 ## 실제 Compose 런타임 검증
 
@@ -50,6 +50,16 @@
 - `/watch/M5KTY`: 경기 결과, RED/BLUE 점수와 점유율, human/bot 수, server identity, sequence 표시를 확인했다.
 - 관리자·모바일 플레이·관전자 화면의 browser console error는 0건이었다.
 
+## 2026-07-16 관리자 탭·참가자 브라우저 재검증
+
+- `/admin`에서 `게임 진행 상황`, `게임·봇 제어`, `운영 지표` 세 탭이 각각 필요한 패널만 노출하는지 DOM과 화면으로 확인했다.
+- 운영 지표의 게임 Tick P95 `?`를 열어 지표 의미, 정상 기준, `/api/config`·`/api/ops`·Node.js 런타임·Kubernetes API 중 실제 수집 출처가 키보드 포커스와 화면에 노출되는 것을 확인했다.
+- 제어 탭에서 실제 WebSocket 봇을 `1개 → 10개 → 15개`로 추가했다. 경기 시작 뒤 관리자 스트림이 초당 `29~30회`를 표시했고 점유율·참가자 수가 실시간으로 변했다. 빠른 `＋ 봇 5개`와 `모두 회수`도 UI에서 실행해 최종 봇 `0개`를 확인했다.
+- 반응형 규칙이 이벤트·공지 카드에 불필요한 35rem 높이와 빈 열을 만들던 문제를 발견했다. 제어 탭 전용 3열 배치를 적용해 Paint Boost, 빠른 봇 제어, 공지 전송을 한 행에서 읽고 조작할 수 있게 수정했다.
+- `/play/MMWDN`에 닉네임 `모바일-QA`로 입장해 팀 배정, 정사각형 카메라 Canvas, 전체 미니맵, 참가자·봇 닉네임, World `216×216`, RTT와 서버 identity가 배경만 남지 않고 렌더링되는 것을 확인했다.
+- 관리자 개요 탭에서 `모바일-QA`와 봇의 서버 좌표가 실시간 참가자 목록에 노출되는지 확인했고, `캔버스 크게 보기` 모달에서 정사각형 전체 월드와 팀 점유율·인원·소켓 수를 확인했다.
+- 증빙 이미지는 `docs/evidence/screenshots/admin-overview-tabs.png`, `admin-controls-tabs.png`, `admin-metrics-tabs.png`, `admin-canvas-modal.png`, `player-live-square.png`에 저장했다.
+
 ## 아직 외부 환경 증거가 필요한 항목
 
 - 발표 PC와 물리 휴대폰 2대 이상을 같은 Wi-Fi에 연결한 QR 접속, touch drag, 화면 회전, 재접속 확인
@@ -62,4 +72,4 @@
 
 ## 현재 실행 상태
 
-Compose의 frontend, Redis, Stable 서버를 실행 중이다. `http://172.21.101.1:8080`이 public base URL이며 frontend HTTP 200, server health `ok`를 확인했다. DR·Prometheus profile은 실행하지 않았다.
+검증을 위해 임시 실행한 로컬 API(3001)와 Web(5173)은 모두 종료했고 두 포트가 Listen 상태가 아님을 확인했다. Docker Desktop도 현재 실행 중이 아니며 Compose·Kubernetes 증거는 위에 기록한 7월 15일 검증 결과다.

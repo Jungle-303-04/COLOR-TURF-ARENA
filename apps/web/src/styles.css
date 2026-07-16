@@ -548,8 +548,14 @@ select, textarea { font: inherit; }
 .admin-tab-controls .admin-actions-panel .url-box,
 .admin-tab-controls .admin-actions-panel > a { display: none; }
 .admin-tab-controls .control-hero { padding-bottom: 1.15rem; }
-.admin-tab-controls .admin-actions-panel { min-height: 0; }
-.admin-tab-controls .admin-event-actions { margin-top: 1rem; }
+.admin-tab-controls .admin-actions-panel { min-height: 0; position: static; display: block; }
+.admin-tab-controls .admin-event-actions { grid-template-columns: minmax(11rem, .72fr) minmax(13rem, .8fr) minmax(20rem, 1.5fr); align-items: stretch; margin-top: 1rem; }
+.admin-tab-controls .boost-button { min-height: 100%; }
+.admin-tab-controls .bot-control { min-height: 100%; }
+.admin-tab-controls .announcement-control { grid-template-columns: minmax(12rem, 1fr) auto; align-content: start; }
+.admin-tab-controls .announcement-control > span { grid-column: 1 / -1; }
+.admin-tab-controls .announcement-control textarea { min-height: 3.25rem; }
+.admin-tab-controls .announcement-control button { min-width: 5rem; }
 .admin-tab-metrics .control-hero,
 .admin-tab-metrics .event-panel,
 .admin-tab-metrics .bulk-bot-panel,
@@ -666,6 +672,8 @@ select, textarea { font: inherit; }
 
 @media (max-width: 980px) {
   .admin-tab-metrics .admin-center { grid-column: auto; }
+  .admin-tab-controls .admin-event-actions { grid-template-columns: 1fr; }
+  .admin-tab-controls .announcement-control { grid-template-columns: 1fr auto; }
   .ops-kpi-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .infrastructure-metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .service-metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
@@ -694,6 +702,8 @@ select, textarea { font: inherit; }
   .ops-health-strip { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .bot-load-controls { grid-template-columns: 1fr 1fr; }
   .admin-player-feed-grid { grid-template-columns: 1fr; }
+  .admin-tab-controls .announcement-control { grid-template-columns: 1fr; }
+  .admin-tab-controls .announcement-control button { min-height: 2.6rem; }
   .controller-page { overflow: auto; }
   .controller-header { position: sticky; top: 0; z-index: 20; background: rgba(8,8,17,.92); backdrop-filter: blur(8px); }
   .play-controller-main { padding: .65rem; gap: .55rem; }
