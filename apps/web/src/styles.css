@@ -517,6 +517,74 @@ select, textarea { font: inherit; }
 .announcement-control textarea { min-height: 4.7rem; resize: vertical; }
 .announcement-control button { padding: .62rem; border: 0; border-radius: .4rem; color: #080811; background: var(--lime); font-size: .55rem; font-weight: 950; }
 
+.admin-tab-list { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .55rem; margin-bottom: 1rem; padding: .38rem; border: 1px solid var(--line); border-radius: .85rem; background: rgba(8,9,16,.86); box-shadow: 0 16px 50px rgba(0,0,0,.18); }
+.admin-tab-list button { min-width: 0; display: grid; gap: .18rem; padding: .75rem .9rem; border: 1px solid transparent; border-radius: .6rem; color: var(--muted); background: transparent; text-align: left; cursor: pointer; transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease; }
+.admin-tab-list button:hover { color: #fff; background: rgba(255,255,255,.035); }
+.admin-tab-list button:focus-visible { outline: 2px solid var(--team-b); outline-offset: 2px; }
+.admin-tab-list button.is-active { color: #fff; border-color: rgba(37,168,255,.34); background: linear-gradient(135deg, rgba(37,168,255,.13), rgba(147,255,79,.055)); box-shadow: inset 0 0 24px rgba(37,168,255,.035); }
+.admin-tab-list b { font-size: .68rem; letter-spacing: .04em; }
+.admin-tab-list small { color: var(--dim); font-size: .48rem; }
+.admin-tab-list button.is-active small { color: #a8cbd7; }
+
+.admin-tab-overview .ops-summary-panel,
+.admin-tab-overview .service-status-panel,
+.admin-tab-overview .metric-history-panel,
+.admin-tab-overview .infrastructure-panel,
+.admin-tab-overview .bulk-bot-panel,
+.admin-tab-overview .chaos-panel,
+.admin-tab-overview .control-hero .action-strip,
+.admin-tab-overview .control-hero .notice-bar,
+.admin-tab-overview .admin-actions-panel .admin-event-actions { display: none; }
+.admin-tab-controls .ops-summary-panel,
+.admin-tab-controls .service-status-panel,
+.admin-tab-controls .metric-history-panel,
+.admin-tab-controls .infrastructure-panel,
+.admin-tab-controls .event-panel,
+.admin-tab-controls .admin-minimap-wrap,
+.admin-tab-controls .admin-player-feed,
+.admin-tab-controls .player-stat-grid,
+.admin-tab-controls .admin-actions-panel .qr-frame,
+.admin-tab-controls .admin-actions-panel .join-room-code,
+.admin-tab-controls .admin-actions-panel .url-box,
+.admin-tab-controls .admin-actions-panel > a { display: none; }
+.admin-tab-controls .control-hero { padding-bottom: 1.15rem; }
+.admin-tab-controls .admin-actions-panel { min-height: 0; }
+.admin-tab-controls .admin-event-actions { margin-top: 1rem; }
+.admin-tab-metrics .control-hero,
+.admin-tab-metrics .event-panel,
+.admin-tab-metrics .bulk-bot-panel,
+.admin-tab-metrics .chaos-panel,
+.admin-tab-metrics .admin-actions-panel { display: none; }
+.admin-tab-metrics .admin-center { grid-column: 2 / -1; }
+
+.ops-summary-panel, .infrastructure-panel { padding: 1rem; margin-top: .8rem; }
+.ops-summary-panel { order: 0; }
+.infrastructure-panel { order: 3; }
+.ops-kpi-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: .55rem; margin-top: .8rem; }
+.ops-kpi-card { --metric-tone: var(--lime); min-width: 0; display: grid; gap: .52rem; padding: .78rem; border: 1px solid color-mix(in srgb, var(--metric-tone) 24%, var(--line)); border-radius: .62rem; background: linear-gradient(145deg, color-mix(in srgb, var(--metric-tone) 7%, transparent), rgba(0,0,0,.22)); }
+.ops-kpi-card.tone-warning { --metric-tone: var(--amber); }
+.ops-kpi-card.tone-danger { --metric-tone: var(--red); }
+.ops-kpi-card header { display: flex; align-items: center; justify-content: space-between; gap: .45rem; }
+.ops-kpi-state { flex: 0 0 auto; padding: .2rem .34rem; border-radius: 999px; color: var(--metric-tone); background: color-mix(in srgb, var(--metric-tone) 10%, transparent); font: 900 .38rem ui-monospace, monospace; letter-spacing: .08em; }
+.ops-kpi-card > strong { color: #f5f7fb; font: 950 clamp(1.1rem,2vw,1.55rem) ui-monospace, monospace; }
+.ops-kpi-card > small { color: var(--dim); font-size: .43rem; }
+.ops-kpi-meter { height: .24rem; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.07); }
+.ops-kpi-meter i { height: 100%; display: block; border-radius: inherit; background: var(--metric-tone); box-shadow: 0 0 12px color-mix(in srgb, var(--metric-tone) 65%, transparent); transition: width 320ms ease; }
+
+.metric-label { min-width: 0; display: inline-flex !important; align-items: center; gap: .28rem; color: inherit; }
+.metric-label-text { min-width: 0; display: inline !important; }
+.metric-help { position: relative; flex: 0 0 auto; display: inline-grid !important; place-items: center; }
+.metric-help > button { width: .9rem; height: .9rem; display: grid; place-items: center; padding: 0; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; color: #aeb3c2; background: rgba(255,255,255,.045); font: 900 .48rem/1 ui-monospace, monospace; cursor: help; }
+.metric-help > button:hover, .metric-help > button:focus-visible { color: #fff; border-color: rgba(37,168,255,.65); background: rgba(37,168,255,.13); outline: none; }
+.metric-help-popover { width: min(17rem,72vw); position: absolute; left: 50%; top: calc(100% + .5rem); z-index: 50; display: grid !important; gap: .4rem; padding: .65rem .72rem; border: 1px solid rgba(37,168,255,.3); border-radius: .52rem; color: #f2f4fa; background: rgba(8,10,18,.98); box-shadow: 0 18px 55px rgba(0,0,0,.55); opacity: 0; pointer-events: none; transform: translate(-50%,-.25rem); transition: opacity 120ms ease, transform 120ms ease; white-space: normal !important; text-align: left; }
+.metric-help-popover b { color: #e7eaf2; font: 750 .53rem/1.5 system-ui, sans-serif; letter-spacing: 0; }
+.metric-help-popover small { color: #80dfff !important; font: 750 .45rem/1.45 ui-monospace, monospace !important; letter-spacing: 0 !important; }
+.metric-help:hover .metric-help-popover, .metric-help:focus-within .metric-help-popover { opacity: 1; transform: translate(-50%,0); }
+.service-metric-grid .metric-label, .ops-health-strip .metric-label { color: var(--dim); font-size: .43rem; font-weight: 900; letter-spacing: .07em; }
+.metric-chart-heading .metric-label { color: #eef0f7; font: 900 .5rem ui-monospace, monospace; letter-spacing: .06em; }
+.infrastructure-metric-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.infrastructure-message { margin: .7rem 0 0; padding: .55rem .65rem; border-left: 2px solid var(--team-b); color: var(--muted); background: rgba(37,168,255,.035); font-size: .54rem; line-height: 1.5; }
+
 .mobile-join-gate { width: min(100% - 2rem, 31rem); margin: auto; padding: 2rem 1.2rem; display: grid; gap: .9rem; }
 .fatal-client-page { min-height: 100svh; display: grid; place-content: center; justify-items: start; gap: .8rem; width: min(100% - 2rem, 34rem); margin: auto; }
 .fatal-client-page p { margin: 0; color: var(--pink); font-size: .62rem; font-weight: 950; letter-spacing: .16em; }
@@ -597,6 +665,9 @@ select, textarea { font: inherit; }
 @keyframes announcement-life { 0%,72% { opacity: 1; } 100% { opacity: 0; filter: blur(2px); } }
 
 @media (max-width: 980px) {
+  .admin-tab-metrics .admin-center { grid-column: auto; }
+  .ops-kpi-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .infrastructure-metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .service-metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .ops-health-strip { grid-template-columns: repeat(3, minmax(0,1fr)); }
   .bot-load-controls { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -605,6 +676,13 @@ select, textarea { font: inherit; }
 }
 
 @media (max-width: 540px) {
+  .admin-tab-list { gap: .3rem; padding: .3rem; }
+  .admin-tab-list button { padding: .62rem .42rem; text-align: center; }
+  .admin-tab-list b { font-size: .54rem; }
+  .admin-tab-list small { display: none; }
+  .ops-kpi-grid { grid-template-columns: 1fr; }
+  .metric-help-popover { position: fixed; left: 50%; top: auto; bottom: 1rem; width: calc(100vw - 2rem); transform: translate(-50%,.35rem); }
+  .metric-help:hover .metric-help-popover, .metric-help:focus-within .metric-help-popover { transform: translate(-50%,0); }
   .admin-canvas-open { padding-inline: .55rem; font-size: 0; }
   .admin-canvas-open::before { content: "크게 보기 ↗"; font-size: .48rem; }
   .admin-canvas-modal-panel { max-height: 98svh; }

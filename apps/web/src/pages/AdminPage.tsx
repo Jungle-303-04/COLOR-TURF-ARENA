@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpsSnapshot, RoomSnapshot, RoomStatus, StateDelta, TeamId, WatchResult } from "@paint-arena/shared";
 import type { Socket } from "socket.io-client";
 import { AppShell } from "../components/AppShell";
+import { MetricLabel } from "../components/MetricHelp";
 import { MetricChart } from "../components/MetricChart";
 import { QrCode } from "../components/QrCode";
 import { StatusPill } from "../components/StatusPill";
@@ -34,6 +35,19 @@ interface OpsHistorySample {
   payload: number;
 }
 
+type AdminTab = "overview" | "controls" | "metrics";
+type MetricTone = "good" | "warning" | "danger";
+
+interface MetricKpiProps {
+  label: string;
+  value: string;
+  description: string;
+  source: string;
+  threshold: string;
+  utilization: number;
+  tone: MetricTone;
+}
+
 const DEFAULT_WORLD_SIZE = 216;
 
 const initialSettings: SettingsState = {
@@ -62,6 +76,27 @@ const roomStatusLabels: Record<RoomStatus, string> = {
   ended: "종료",
 };
 
+const adminTabs: Array<{ id: AdminTab; label: string; description: string }> = [
+  { id: "overview", label: "게임 진행 상황", description: "캔버스·점수·참가자" },
+  { id: "controls", label: "게임·봇 제어", description: "경기 명령·부하·공지" },
+  { id: "metrics", label: "운영 지표", description: "성능·자원·이벤트" },
+];
+
+const isAdminTab = (value: string | null): value is AdminTab => adminTabs.some((tab) => tab.id === value);
+const metricTone = (utilization: number): MetricTone => utilization >= 1 ? "danger" : utilization >= 0.7 ? "warning" : "good";
+
+const MetricKpi = ({ label, value, description, source, threshold, utilization, tone }: MetricKpiProps) => (
+  <article className={`ops-kpi-card tone-${tone}`}>
+    <header>
+      <MetricLabel label={label} description={description} source={source} />
+      <span className="ops-kpi-state">{tone === "good" ? "정상" : tone === "warning" ? "주의" : "위험"}</span>
+    </header>
+    <strong>{value}</strong>
+    <div className="ops-kpi-meter" aria-hidden="true"><i style={{ width: `${Math.min(100, Math.max(2, utilization * 100))}%` }} /></div>
+    <small>{threshold}</small>
+  </article>
+);
+
 export const AdminPage = () => {
   const [tokenInput, setTokenInput] = useState(getAdminToken());
   const [authorized, setAuthorized] = useState(false);
@@ -81,6 +116,11 @@ export const AdminPage = () => {
   const [metricHistory, setMetricHistory] = useState<OpsHistorySample[]>([]);
   const [botBatchSize, setBotBatchSize] = useState(100);
   const [isArenaModalOpen, setIsArenaModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<AdminTab>(() => {
+    const queryTab = new URLSearchParams(window.location.search).get("tab");
+    const savedTab = localStorage.getItem("color-turf-admin-tab");
+    return isAdminTab(queryTab) ? queryTab : isAdminTab(savedTab) ? savedTab : "overview";
+  });
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modalCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<ArenaCanvasRenderer | null>(null);
@@ -237,12 +277,12 @@ export const AdminPage = () => {
   }, [room?.roomCode]);
 
   useEffect(() => {
-    if (!canvasRef.current) return;
+    if (activeTab !== "overview" || !canvasRef.current) return;
     const renderer = new ArenaCanvasRenderer(canvasRef.current);
     rendererRef.current = renderer;
     if (room) renderer.update(room);
     return () => { renderer.destroy(); rendererRef.current = null; };
-  }, [Boolean(room)]);
+  }, [activeTab, Boolean(room)]);
 
   useEffect(() => { if (room) rendererRef.current?.update(room); }, [room]);
 
@@ -287,6 +327,14 @@ export const AdminPage = () => {
     localStorage.setItem("color-turf-admin-room", code);
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("room", code);
+    window.history.replaceState({}, "", nextUrl);
+  };
+
+  const selectTab = (tab: AdminTab) => {
+    setActiveTab(tab);
+    localStorage.setItem("color-turf-admin-tab", tab);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("tab", tab);
     window.history.replaceState({}, "", nextUrl);
   };
 
@@ -341,6 +389,15 @@ export const AdminPage = () => {
     const count = Math.max(1, Math.min(500, Math.round(requestedCount)));
     void run(() => api.bots(room.roomCode, action, count), `봇 ${count}개 ${action === "add" ? "추가" : "회수"} 완료`);
   };
+  const tickBudgetMs = 1000 / Math.max(1, tickRateHz);
+  const tickP95Ms = ops?.server.metrics.tickP95Ms ?? 0;
+  const inputLatencyP95Ms = ops?.server.inputLatencyP95Ms ?? 0;
+  const eventLoopLagP95Ms = ops?.server.metrics.eventLoopLagP95Ms ?? 0;
+  const cpuPercent = ops?.server.metrics.cpuPercent ?? 0;
+  const tickUtilization = tickP95Ms / tickBudgetMs;
+  const inputLatencyUtilization = inputLatencyP95Ms / 100;
+  const eventLoopUtilization = eventLoopLagP95Ms / 50;
+  const cpuUtilization = cpuPercent / 80;
 
   if (!authorized) return <div className="admin-login-page"><div className="admin-login-card"><span className="panel-kicker">관리자 전용 운영</span><h1>컬러 터프 관리실</h1><p>게임·봇·장애 시연 API는 관리자 토큰으로 보호됩니다.</p><label><span>관리자 토큰</span><input type="password" value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void login(); }} placeholder="demo-admin" /></label><button type="button" className="button button-primary button-block" onClick={() => void login()}>관리자 화면 열기</button>{error && <div className="notice-bar notice-error">{error}</div>}</div></div>;
 
@@ -350,7 +407,19 @@ export const AdminPage = () => {
       <button className="button button-secondary admin-canvas-open" type="button" disabled={!room} onClick={() => setIsArenaModalOpen(true)}>캔버스 크게 보기 ↗</button>
       <button className="button button-ghost" type="button" onClick={logout}>잠금</button>
     </>}>
-      <div className="admin-layout color-turf-admin">
+      <nav className="admin-tab-list" role="tablist" aria-label="관리자 화면 구분">
+        {adminTabs.map((tab) => <button
+          type="button"
+          role="tab"
+          key={tab.id}
+          id={`admin-tab-${tab.id}`}
+          aria-controls="admin-tab-content"
+          aria-selected={activeTab === tab.id}
+          className={activeTab === tab.id ? "is-active" : ""}
+          onClick={() => selectTab(tab.id)}
+        ><b>{tab.label}</b><small>{tab.description}</small></button>)}
+      </nav>
+      <div className={`admin-layout color-turf-admin admin-tab-${activeTab}`} id="admin-tab-content" role="tabpanel" aria-labelledby={`admin-tab-${activeTab}`}>
         <aside className="room-rail panel">
           <div className="panel-heading"><div><span className="panel-kicker">경기방</span><h2>경기장 목록</h2></div><span className="count-badge">{rooms.length}</span></div>
           <div className="room-list">{rooms.length === 0 && <p className="empty-copy">아직 생성된 방이 없습니다.</p>}{rooms.map((item) => <button type="button" key={item.roomCode} className={`room-list-item ${selectedCode === item.roomCode ? "is-selected" : ""}`} onClick={() => selectRoom(item.roomCode)}><span><b>{item.roomCode}</b><small>{item.releaseChannel.toUpperCase()} · {item.connectedPlayers}/{item.players}명 연결</small></span><StatusPill status={item.status} locale="ko" /></button>)}</div>
@@ -370,7 +439,27 @@ export const AdminPage = () => {
             <div className={`notice-bar ${error ? "notice-error" : ""}`}>{error || notice}</div>
           </div>
 
-          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">실측 지표</span></div><div className="service-metric-grid"><div><span>서버 Tick</span><strong>{tickRateHz}Hz</strong></div><div><span>연결 소켓</span><strong>{ops?.server.connectedSockets ?? 0}</strong></div><div><span>게임 틱 P95</span><strong>{formatNumber(ops?.server.metrics.tickP95Ms ?? 0, 1)}ms</strong></div><div><span>전송 P95</span><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div><div><span>왕복 지연 P95</span><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div><div><span>상태 크기 P95</span><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div><div><span>스냅샷 경과</span><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div><div><span>버전</span><strong>{ops?.server.identity.version ?? "—"}</strong></div><div><span>클러스터</span><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div></div></section>
+          <section className="panel ops-summary-panel">
+            <div className="panel-heading"><div><span className="panel-kicker">한눈에 보는 상태</span><h2>게임 서버 성능 여유</h2></div><span className="actual-tag">실측 · 최근 120초</span></div>
+            <div className="ops-kpi-grid">
+              <MetricKpi label="게임 틱 P95" value={`${formatNumber(tickP95Ms, 1)}ms`} description="최근 Tick 처리시간의 95백분위다. 30Hz에서는 한 Tick이 약 33.3ms 안에 끝나야 다음 판정을 제시간에 수행한다." source="/api/ops → server.metrics.tickP95Ms · GameRoom.tick() 실행시간" threshold={`Tick 예산 ${formatNumber(tickBudgetMs, 1)}ms`} utilization={tickUtilization} tone={metricTone(tickUtilization)} />
+              <MetricKpi label="입력 지연 P95" value={`${formatNumber(inputLatencyP95Ms, 1)}ms`} description="휴대폰이 기록한 전송 시각부터 서버가 입력을 검증할 때까지 걸린 시간의 95백분위다." source="/api/ops → server.inputLatencyP95Ms · player_input.sentAt" threshold="주의 70ms · 위험 100ms" utilization={inputLatencyUtilization} tone={metricTone(inputLatencyUtilization)} />
+              <MetricKpi label="이벤트 루프 P95" value={`${formatNumber(eventLoopLagP95Ms, 1)}ms`} description="Node.js 이벤트 루프가 다른 작업 때문에 제시간에 실행되지 못한 지연의 95백분위다." source="/api/ops → server.metrics.eventLoopLagP95Ms · monitorEventLoopDelay" threshold="주의 35ms · 위험 50ms" utilization={eventLoopUtilization} tone={metricTone(eventLoopUtilization)} />
+              <MetricKpi label="CPU 사용률" value={`${formatNumber(cpuPercent, 1)}%`} description="게임 서버 프로세스가 최근 관측 구간에 사용한 CPU 시간 비율이다." source="/api/ops → server.metrics.cpuPercent · process.cpuUsage()" threshold="주의 56% · 위험 80%" utilization={cpuUtilization} tone={metricTone(cpuUtilization)} />
+            </div>
+          </section>
+
+          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">가짜 값 없음</span></div><div className="service-metric-grid">
+            <div><MetricLabel label="서버 Tick" description="서버 권위 판정과 상태 Delta 전송의 목표 빈도다." source="/api/config → tickRateHz" /><strong>{tickRateHz}Hz</strong></div>
+            <div><MetricLabel label="연결 소켓" description="현재 game-api에 연결된 플레이어·봇·관전자·관리자 Socket.IO 연결 수다." source="/api/ops → server.connectedSockets · io.engine.clientsCount" /><strong>{ops?.server.connectedSockets ?? 0}</strong></div>
+            <div><MetricLabel label="게임 틱 P95" description="최근 게임 Tick 처리시간 표본의 95백분위다." source="/api/ops → server.metrics.tickP95Ms" /><strong>{formatNumber(tickP95Ms, 1)}ms</strong></div>
+            <div><MetricLabel label="전송 P95" description="상태 Snapshot 또는 Delta를 직렬화하고 전송 요청하는 처리시간의 95백분위다." source="/api/ops → server.metrics.broadcastP95Ms" /><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div>
+            <div><MetricLabel label="왕복 지연 P95" description="클라이언트 ping 전송 시각과 서버 수신 시각의 차이다. 이름은 RTT지만 현재 서버 지표는 완전한 왕복이 아닌 도착 지연 대체값이다." source="/api/ops → server.metrics.websocketRttP95Ms · client_ping.sentAt" /><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div>
+            <div><MetricLabel label="상태 크기 P95" description="최근 Snapshot 또는 Delta JSON payload 크기의 95백분위다." source="/api/ops → server.metrics.statePayloadBytes · Buffer.byteLength" /><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div>
+            <div><MetricLabel label="스냅샷 경과" description="가장 최근 Redis Snapshot 저장 이후 흐른 시간이다." source="/api/ops → server.metrics.snapshotAgeSeconds" /><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div>
+            <div><MetricLabel label="RSS 메모리" description="힙과 네이티브 메모리를 포함한 게임 서버 프로세스의 실제 상주 메모리다." source="/api/ops → server.metrics.memoryRssMb · process.memoryUsage().rss" /><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
+            <div><MetricLabel label="클러스터" description="현재 방 권위를 제공하는 서버의 클러스터 식별자다." source="/api/ops → server.identity.cluster · CLUSTER_NAME" /><strong>{ops?.server.identity.cluster.toUpperCase() ?? "—"}</strong></div>
+          </div></section>
 
           <section className="panel event-panel"><div className="panel-heading"><div><span className="panel-kicker">운영 이벤트 기록</span><h2>배포·장애·복구 이벤트</h2></div><span className="live-chip"><i /> 실시간</span></div><ol className="event-list admin-timeline">{ops?.recentEvents.slice(0, 18).map((event) => <li key={event.id}><time>{formatTime(event.at)}</time><span className={`event-dot source-${event.source}`} /><div><b>{event.type}</b><p>{event.roomCode ? `[${event.roomCode}] ` : ""}{event.message}</p></div></li>)}</ol></section>
 
@@ -381,23 +470,34 @@ export const AdminPage = () => {
               <span className="actual-tag">최근 120초</span>
             </div>
             <div className="ops-health-strip">
-              <div><span>초당 입력</span><strong>{formatNumber(ops?.server.inputEventsPerSecond ?? 0)}</strong></div>
-              <div><span>입력 지연 P95</span><strong>{formatNumber(ops?.server.inputLatencyP95Ms ?? 0, 1)}ms</strong></div>
-              <div><span>입력 거부율</span><strong>{formatNumber(ops?.server.metrics.inputRejectRate ?? 0, 2)}%</strong></div>
-              <div><span>이벤트 루프 P95</span><strong>{formatNumber(ops?.server.metrics.eventLoopLagP95Ms ?? 0, 1)}ms</strong></div>
-              <div><span>CPU 사용률</span><strong>{formatNumber(ops?.server.metrics.cpuPercent ?? 0, 1)}%</strong></div>
-              <div><span>RSS 메모리</span><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
+              <div><MetricLabel label="초당 입력" description="서버가 최근 1초 동안 받은 player_input 이벤트 수다." source="/api/ops → server.inputEventsPerSecond" /><strong>{formatNumber(ops?.server.inputEventsPerSecond ?? 0)}</strong></div>
+              <div><MetricLabel label="입력 지연 P95" description="입력 전송부터 서버 검증까지 지연의 95백분위다." source="/api/ops → server.inputLatencyP95Ms" /><strong>{formatNumber(inputLatencyP95Ms, 1)}ms</strong></div>
+              <div><MetricLabel label="입력 거부율" description="누적 입력 중 범위·세션·빈도·순서 검증에서 거부된 비율이다." source="/api/ops → server.metrics.inputRejectRate" /><strong>{formatNumber(ops?.server.metrics.inputRejectRate ?? 0, 2)}%</strong></div>
+              <div><MetricLabel label="재접속" description="서버 시작 이후 같은 세션으로 복구된 Socket.IO 재접속 누적 횟수다." source="/api/ops → server.reconnects" /><strong>{formatNumber(ops?.server.reconnects ?? 0)}</strong></div>
+              <div><MetricLabel label="연결 끊김" description="서버 시작 이후 관측한 Socket.IO disconnect 누적 횟수다." source="/api/ops → server.disconnects" /><strong>{formatNumber(ops?.server.disconnects ?? 0)}</strong></div>
+              <div><MetricLabel label="가동 시간" description="현재 game-api 프로세스가 시작된 이후 경과한 시간이다." source="/api/ops → server.uptimeSeconds · process.uptime()" /><strong>{formatNumber(ops?.server.uptimeSeconds ?? 0)}초</strong></div>
             </div>
             <div className="metric-chart-grid">
-              <MetricChart title="입력 처리량" unit="/초" description="플레이어 이동 입력 처리량" color="#93ff4f" points={chartPoints((sample) => sample.inputRate)} decimals={0} />
-              <MetricChart title="연결 소켓 수" unit="" description="사람·관전자·봇 연결 수" color="#25a8ff" points={chartPoints((sample) => sample.sockets)} decimals={0} />
-              <MetricChart title="입력 지연 P95" unit="ms" description="입력 수신부터 검증까지의 지연" color="#ffbf47" points={chartPoints((sample) => sample.inputLatency)} decimals={1} />
-              <MetricChart title="게임 틱 P95" unit="ms" description="게임 루프 한 회 처리 시간" color="#ff405a" points={chartPoints((sample) => sample.tick)} decimals={1} />
-              <MetricChart title="이벤트 루프 지연 P95" unit="ms" description="Node.js 이벤트 루프 정체" color="#c98cff" points={chartPoints((sample) => sample.eventLoopLag)} decimals={1} />
-              <MetricChart title="CPU 사용률" unit="%" description="게임 서버 프로세스 CPU" color="#51e2c2" points={chartPoints((sample) => sample.cpu)} decimals={1} />
-              <MetricChart title="RSS 메모리" unit="MB" description="게임 서버 실제 메모리 점유" color="#f28ac7" points={chartPoints((sample) => sample.memory)} decimals={1} />
-              <MetricChart title="상태 전송 크기 P95" unit="KB" description="클라이언트 상태 전송 크기" color="#9eb5ff" points={chartPoints((sample) => sample.payload)} decimals={1} />
+              <MetricChart title="입력 처리량" unit="/초" description="플레이어 이동 입력 처리량" source="/api/ops → server.inputEventsPerSecond" color="#93ff4f" points={chartPoints((sample) => sample.inputRate)} decimals={0} />
+              <MetricChart title="연결 소켓 수" unit="" description="사람·관전자·봇·관리자 연결 수" source="/api/ops → server.connectedSockets" color="#25a8ff" points={chartPoints((sample) => sample.sockets)} decimals={0} />
+              <MetricChart title="입력 지연 P95" unit="ms" description="입력 전송부터 검증까지의 지연" source="/api/ops → server.inputLatencyP95Ms" color="#ffbf47" points={chartPoints((sample) => sample.inputLatency)} decimals={1} />
+              <MetricChart title="게임 틱 P95" unit="ms" description="게임 루프 한 회 처리 시간" source="/api/ops → server.metrics.tickP95Ms" color="#ff405a" points={chartPoints((sample) => sample.tick)} decimals={1} />
+              <MetricChart title="이벤트 루프 지연 P95" unit="ms" description="Node.js 이벤트 루프 정체" source="/api/ops → server.metrics.eventLoopLagP95Ms" color="#c98cff" points={chartPoints((sample) => sample.eventLoopLag)} decimals={1} />
+              <MetricChart title="CPU 사용률" unit="%" description="게임 서버 프로세스 CPU" source="/api/ops → server.metrics.cpuPercent" color="#51e2c2" points={chartPoints((sample) => sample.cpu)} decimals={1} />
+              <MetricChart title="RSS 메모리" unit="MB" description="게임 서버 실제 상주 메모리" source="/api/ops → server.metrics.memoryRssMb" color="#f28ac7" points={chartPoints((sample) => sample.memory)} decimals={1} />
+              <MetricChart title="상태 전송 크기 P95" unit="KB" description="클라이언트 상태 전송 크기" source="/api/ops → server.metrics.statePayloadBytes" color="#9eb5ff" points={chartPoints((sample) => sample.payload)} decimals={1} />
             </div>
+          </section>
+
+          <section className="panel infrastructure-panel">
+            <div className="panel-heading"><div><span className="panel-kicker">실행 환경</span><h2>배포·Kubernetes 관측</h2></div><span className="actual-tag">{ops?.infrastructure.source === "kubernetes-api" ? "Kubernetes API" : "로컬 런타임"}</span></div>
+            <div className="service-metric-grid infrastructure-metric-grid">
+              <div><MetricLabel label="관측 모드" description="인프라 값이 Kubernetes API 실측인지 로컬 런타임 정보인지 구분한다." source="/api/ops → infrastructure.source" /><strong>{ops?.infrastructure.mode.toUpperCase() ?? "—"}</strong></div>
+              <div><MetricLabel label="준비 Replica" description="Deployment가 Ready로 보고한 Replica 수와 목표 Replica 수다." source="Kubernetes Apps API → readyReplicas / desiredReplicas" /><strong>{ops?.infrastructure.readyReplicas ?? "—"} / {ops?.infrastructure.desiredReplicas ?? "—"}</strong></div>
+              <div><MetricLabel label="관측 Pod" description="Kubernetes API에서 조회한 game-api Pod 수다. 로컬에서는 0이다." source="Kubernetes Core API → pods.items" /><strong>{ops?.infrastructure.pods.length ?? 0}</strong></div>
+              <div><MetricLabel label="이미지" description="현재 배포가 보고한 컨테이너 이미지 태그 또는 로컬 이미지 식별자다." source="/api/ops → infrastructure.imageTag" /><strong>{ops?.infrastructure.imageTag ?? "—"}</strong></div>
+            </div>
+            <p className="infrastructure-message">{ops?.infrastructure.message ?? "인프라 관측을 기다리는 중입니다."}</p>
           </section>
 
           {room && <section className="panel bulk-bot-panel">
@@ -419,7 +519,7 @@ export const AdminPage = () => {
         </section>
 
         <aside className="join-panel panel admin-actions-panel">
-          <div className="panel-heading"><div><span className="panel-kicker">모바일 참가</span><h2>QR과 운영 기능</h2></div></div>
+          <div className="panel-heading"><div><span className="panel-kicker">{activeTab === "controls" ? "게임 연출" : "모바일 참가"}</span><h2>{activeTab === "controls" ? "이벤트·공지 제어" : "입장 QR·관전 링크"}</h2></div></div>
           {room ? <><div className="qr-frame"><QrCode value={joinUrl} label={`방 ${room.roomCode} 입장`} size={210} /></div><strong className="join-room-code">{room.roomCode}</strong><div className="url-box"><span>참가 링크</span><code>{joinUrl}</code></div><a className="button button-secondary button-block" href={watchUrl} target="_blank" rel="noreferrer">관전 화면 열기 ↗</a><div className="admin-event-actions"><button className="button boost-button button-block" type="button" disabled={busy} onClick={() => void run(async () => { const result = await api.paintBoost(room.roomCode); setRoom(result.room); }, "페인트 강화 ×2 시작")}>페인트 강화 ×2 · 10초</button><div className="bot-control"><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "remove", 5), "봇 5개 회수 완료")}>− 봇 5개</button><span>{bots}개 활성</span><button type="button" disabled={busy} onClick={() => void run(() => api.bots(room.roomCode, "add", 5), "봇 5개 추가 완료")}>＋ 봇 5개</button></div><label className="announcement-control"><span>운영 공지</span><textarea maxLength={160} value={announcement} onChange={(event) => setAnnouncement(event.target.value)} placeholder="관전/플레이 화면 공지" /><button type="button" onClick={() => void run(async () => { const result = await api.announcement(room.roomCode, announcement); setRoom(result.room); }, "공지 전송 완료")}>전송</button></label></div></> : <div className="qr-empty"><div className="qr-placeholder-icon">＋</div><h3>활성 경기장 없음</h3><p>경기장을 만들면 입장 QR과 운영 기능이 표시됩니다.</p></div>}
         </aside>
       </div>

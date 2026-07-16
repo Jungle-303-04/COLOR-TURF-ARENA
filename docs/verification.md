@@ -24,6 +24,7 @@
 - 플레이 카메라는 `72×72` 정사각형 cells만 표시해 전체 월드의 1/9을 노출한다. 중앙·좌상단·우하단·작은 월드 경계 조건을 단위 테스트했다.
 - 플레이어 좌표는 30Hz 서버 상태 사이를 약 33ms 동안 보간하며, 시작·중간·종료 좌표와 범위 제한을 단위 테스트했다. 판정 좌표는 서버 상태를 그대로 유지한다.
 - Windows 로컬 서버에서 `/api/config`의 `tickRateHz=30`을 확인하고 실제 Socket.IO 관전자 Delta를 3.007초 동안 측정했다. 90회가 수신되어 `29.93 updates/s`였으며, 누적 시간 오차를 보정하는 Tick 스케줄러가 설정 주기를 실제 전송에도 유지함을 확인했다.
+- 관리자 화면은 게임 관전, 게임·봇 제어, 운영 지표를 세 탭으로 분리한다. 지표 카드는 30Hz Tick 예산과 입력·이벤트 루프·CPU 임계치를 상태 색상으로 표시하며, 각 `?` 툴팁은 `/api/config`, `/api/ops`, Node.js 런타임 또는 Kubernetes API 중 실제 출처를 명시한다.
 - Compose 방 `A87XN`에 관리 API로 실제 WebSocket 봇 100개를 한 번에 요청했다. 6초 측정 시 98 players, 104 sockets, 340 inputs/s, input P95 246ms, tick P95 0.24ms, event-loop P95 43.97ms, CPU 100%, RSS 210.40MB가 `/api/ops`에 기록됐다. 이후 500개 회수 명령으로 봇 수 0을 확인했다.
 - 최종 이미지 재기동 후 방 `2CXQU`에 봇 50개를 요청해 50개 모두 연결, 442 inputs/s, input P95 59ms, tick P95 0.14ms를 확인했고 전부 회수했다.
 - 공지는 전체 Grid Snapshot 대신 `state_delta`로 즉시 전송되며, 자동 테스트와 Compose 런타임 모두에서 약 2초 표시 후 3초 시점에 `announcement=null`로 제거되는 것을 확인했다.

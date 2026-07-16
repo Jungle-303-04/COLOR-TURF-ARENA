@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { formatNumber } from "../lib/format";
+import { MetricLabel } from "./MetricHelp";
 
 export interface MetricPoint {
   at: number;
@@ -10,12 +11,13 @@ interface MetricChartProps {
   title: string;
   unit: string;
   description: string;
+  source: string;
   color: string;
   points: MetricPoint[];
   decimals?: number;
 }
 
-export const MetricChart = ({ title, unit, description, color, points, decimals = 1 }: MetricChartProps) => {
+export const MetricChart = ({ title, unit, description, source, color, points, decimals = 1 }: MetricChartProps) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const latest = points.at(-1)?.value ?? 0;
 
@@ -98,7 +100,7 @@ export const MetricChart = ({ title, unit, description, color, points, decimals 
     return () => observer.disconnect();
   }, [color, points]);
 
-  return <article className="metric-chart-card"><div className="metric-chart-heading"><div><span>{title}</span><small>{description}</small></div><strong>{formatNumber(latest, decimals)}<em>{unit}</em></strong></div><canvas ref={canvasRef} aria-label={`${title} 최근 2분 시계열 그래프`} /></article>;
+  return <article className="metric-chart-card"><div className="metric-chart-heading"><div><MetricLabel label={title} description={description} source={source} /><small>{description}</small></div><strong>{formatNumber(latest, decimals)}<em>{unit}</em></strong></div><canvas ref={canvasRef} aria-label={`${title} 최근 2분 시계열 그래프`} /></article>;
 };
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
