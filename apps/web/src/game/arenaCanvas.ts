@@ -1,7 +1,7 @@
 import type { PlayerPublic, RoomSnapshot, TeamId, Vector2 } from "@paint-arena/shared";
 
 export const DEFAULT_CAMERA_SIZE = 72;
-export const POSITION_INTERPOLATION_MS = 50;
+export const POSITION_INTERPOLATION_MS = 1000 / 30;
 
 /*
  * Canvas responsibility pattern adapted from over-engineer/Socket.io-whiteboard

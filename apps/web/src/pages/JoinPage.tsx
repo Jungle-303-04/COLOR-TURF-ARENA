@@ -17,6 +17,7 @@ interface StoredSession {
 }
 
 const sessionKey = (roomCode: string) => `color-turf-session:${roomCode}`;
+const PLAYER_INPUT_INTERVAL_MS = 50;
 
 const loadSession = (roomCode: string): StoredSession => {
   try {
@@ -200,7 +201,7 @@ export const JoinPage = () => {
     updateJoystick(event);
     sendInput(vectorRef.current);
     if (inputTimerRef.current) window.clearInterval(inputTimerRef.current);
-    inputTimerRef.current = window.setInterval(() => sendInput(vectorRef.current), 100);
+    inputTimerRef.current = window.setInterval(() => sendInput(vectorRef.current), PLAYER_INPUT_INTERVAL_MS);
   };
 
   const stopJoystick = () => {

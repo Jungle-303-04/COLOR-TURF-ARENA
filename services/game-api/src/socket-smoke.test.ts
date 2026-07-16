@@ -60,7 +60,7 @@ describe("two-client Socket.IO and protected operations flow", () => {
     stop = gameServer.stop;
 
     const config = await (await fetch(`${running.url}/api/config`)).json() as { tickRateHz: number };
-    expect(config.tickRateHz).toBe(20);
+    expect(config.tickRateHz).toBe(30);
 
     expect((await fetch(`${running.url}/api/rooms`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
     const createResponse = await fetch(`${running.url}/api/rooms`, {

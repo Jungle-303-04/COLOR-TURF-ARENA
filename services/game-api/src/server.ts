@@ -100,7 +100,7 @@ interface RoomClusterResponse {
   error?: string;
 }
 
-export const DEFAULT_TICK_RATE_HZ = 20;
+export const DEFAULT_TICK_RATE_HZ = 30;
 const DEFAULT_TICK_INTERVAL_MS = 1000 / DEFAULT_TICK_RATE_HZ;
 
 const numeric = (value: unknown, fallback: number): number => {
@@ -178,6 +178,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const configuredTickDelayMs = Math.max(0, options.demoTickDelayMs ?? numeric(process.env.DEMO_TICK_DELAY_MS, 0));
   let boundUrl = "http://127.0.0.1:3001";
   let tickRunning = false;
+  let tickSchedulerActive = false;
+  let nextTickAt = 0;
   let leaseMaintenanceRunning = false;
 
   const events: EventLogEntry[] = [];
@@ -536,6 +538,21 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     } finally {
       tickRunning = false;
     }
+  };
+
+  const scheduleNextTick = () => {
+    if (!tickSchedulerActive) return;
+    const delayMs = Math.max(0, nextTickAt - performance.now());
+    tickTimer = setTimeout(() => {
+      tickTimer = null;
+      void runTicks().finally(() => {
+        if (!tickSchedulerActive) return;
+        nextTickAt += DEFAULT_TICK_INTERVAL_MS;
+        const now = performance.now();
+        if (nextTickAt <= now) nextTickAt = now + DEFAULT_TICK_INTERVAL_MS;
+        scheduleNextTick();
+      });
+    }, delayMs);
   };
 
   const botManager = new BotManager(
@@ -1046,7 +1063,9 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     const address = httpServer.address() as AddressInfo;
     boundUrl = `http://127.0.0.1:${address.port}`;
     await recoverAvailableRooms();
-    tickTimer = setInterval(() => void runTicks(), DEFAULT_TICK_INTERVAL_MS);
+    tickSchedulerActive = true;
+    nextTickAt = performance.now() + DEFAULT_TICK_INTERVAL_MS;
+    scheduleNextTick();
     // Every gateway computes the same cluster room summary, but only its local
     // admin sockets need that sample. Avoid N replicas broadcasting N copies.
     opsTimer = setInterval(() => void getOpsSnapshot().then((snapshot) => io.local.to("ops").emit("ops.snapshot", snapshot)), 1000);
@@ -1073,7 +1092,8 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     // Bots are part of the live room load. Preserve their sessions in the
     // snapshot so the next authority can recreate them after a rolling update.
     botManager.stopAll(false);
-    if (tickTimer) clearInterval(tickTimer);
+    tickSchedulerActive = false;
+    if (tickTimer) clearTimeout(tickTimer);
     if (opsTimer) clearInterval(opsTimer);
     if (snapshotTimer) clearInterval(snapshotTimer);
     if (leaseTimer) clearInterval(leaseTimer);

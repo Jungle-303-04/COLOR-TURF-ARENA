@@ -19,7 +19,7 @@
 4. `/watch/:roomId`를 Fullscreen으로 연다.
 5. Start 후 `PRIMARY · STABLE · DELTA`와 낮은 Payload/Tick p95를 보여준다.
 
-말할 내용: “휴대폰은 방향만 보내고 위치·속도·Paint·점수는 20Hz 서버가 판정합니다.”
+말할 내용: “휴대폰은 방향만 보내고 위치·속도·Paint·점수는 30Hz 서버가 판정합니다. 화면은 기기 주사율로 부드럽게 그립니다.”
 
 ## 1:00–1:40 — Paint Boost
 

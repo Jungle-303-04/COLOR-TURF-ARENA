@@ -15,7 +15,7 @@ export const ScreenPage = () => {
   const roomCode = rawCode.toUpperCase();
   const [snapshot, setSnapshot] = useState<RoomSnapshot | null>(null);
   const [baseUrl, setBaseUrl] = useState(window.location.origin);
-  const [tickRateHz, setTickRateHz] = useState(20);
+  const [tickRateHz, setTickRateHz] = useState(30);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [timeline, setTimeline] = useState<EventLogEntry[]>([]);

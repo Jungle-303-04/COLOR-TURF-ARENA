@@ -70,7 +70,7 @@ export const AdminPage = () => {
   const [ops, setOps] = useState<OpsSnapshot | null>(null);
   const [selectedCode, setSelectedCode] = useState(() => new URLSearchParams(window.location.search).get("room")?.toUpperCase() ?? localStorage.getItem("color-turf-admin-room") ?? "");
   const [baseUrl, setBaseUrl] = useState(window.location.origin);
-  const [tickRateHz, setTickRateHz] = useState(20);
+  const [tickRateHz, setTickRateHz] = useState(30);
   const [settings, setSettings] = useState(initialSettings);
   const [announcement, setAnnouncement] = useState("");
   const [busy, setBusy] = useState(false);
