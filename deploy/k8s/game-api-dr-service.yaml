@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-dr
+  labels:
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: stable
+    color-turf/cluster-role: dr
+spec:
+  # The standalone Kustomize overlay is a single-cluster deployment. This
+  # alias keeps the Web Nginx backup hostname resolvable and falls back to the
+  # stable Pods; it does not claim to provide cross-cluster disaster recovery.
+  selector:
+    app.kubernetes.io/name: paint-arena-game-api
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http

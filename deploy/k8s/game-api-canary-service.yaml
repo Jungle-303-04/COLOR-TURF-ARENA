@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-canary
+  labels:
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: canary
+spec:
+  # The standalone Kustomize overlay has no separate Canary Deployment.
+  # Keep the Canary route resolvable by falling back to the stable API Pods.
+  selector:
+    app.kubernetes.io/name: paint-arena-game-api
+  ports:
+    - name: http
+      port: 3001
+      targetPort: http

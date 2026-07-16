@@ -43,12 +43,12 @@
 4. `/ops`와 관리자 `운영 지표` 탭에서 Tick p95, Event Loop p95, CPU, Broadcast와 Payload 증가를 비교한다.
 5. 관전 화면의 작은 `DEGRADED` 표시를 확인한다.
 
-이 단계의 수치는 가짜 상태가 아니다. Canary Room의 전체 Grid 직렬화와 실제 Bot 입력이 만든 런타임 측정값이다. 별도 Canary Pod를 배포한 환경에서는 `server-canary` Service의 `/metrics`도 함께 비교한다.
+이 단계의 수치는 가짜 상태가 아니다. `/socket/canary`로 분리된 Canary authority의 전체 Grid 직렬화와 실제 Bot 입력이 만든 런타임 측정값이다. 별도 Canary Pod를 배포한 환경에서는 `server-canary` Service의 `/metrics`도 함께 비교한다.
 
 ## 2:40–3:20 — Rollback
 
 1. `SLO_BREACH`, `ROLLBACK_STARTED` 이벤트를 전송한다.
-2. 실제 배포 워크플로우에서 Canary를 Rollback한다. 발표 비상용으로만 `scripts/rollback-canary.ps1` 또는 `.sh`를 쓴다.
+2. 실제 배포 워크플로우에서 Canary를 Rollback한다. 발표 비상용 `scripts/rollback-canary.ps1` 또는 `.sh`도 Helm 값을 `canary.enabled=false`로 갱신해 Canary Deployment와 release state를 함께 되돌린다.
 3. 로컬 Room 비교라면 Canary Room의 Bot을 모두 회수하고 Stable Arena를 시작한다.
 4. `ROLLBACK_COMPLETED`를 전달하고 Delta/Payload/Tick 지표가 정상화되는지 보여준다.
 

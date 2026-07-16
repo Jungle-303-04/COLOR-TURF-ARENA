@@ -42,6 +42,13 @@ web:
     requests: { cpu: 25m, memory: 32Mi }
     limits: { cpu: 200m, memory: 128Mi }
 
+gateway:
+  dr:
+    # Empty means a single-cluster fallback Service that selects the stable
+    # game-server Pods. Set a resolvable DNS name when a real DR endpoint is
+    # reachable from this cluster on port 3001.
+    externalName: ""
+
 redis:
   install: true
   image: redis:8.2-alpine

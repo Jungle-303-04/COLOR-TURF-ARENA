@@ -20,6 +20,32 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: server-dr
+  labels:
+    {{- include "color-turf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: stable
+    color-turf/cluster-role: dr
+spec:
+  {{- if .Values.gateway.dr.externalName }}
+  type: ExternalName
+  externalName: {{ .Values.gateway.dr.externalName | quote }}
+  ports:
+    - { name: http, port: 3001 }
+  {{- else }}
+  # Keep the Web Nginx backup upstream resolvable in a single-cluster install.
+  # This is an availability fallback to the stable Pods, not cross-cluster DR.
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: game-server
+    color-turf/release-channel: stable
+  ports:
+    - { name: http, port: 3001, targetPort: http }
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: {{ include "color-turf.fullname" . }}-web
   labels:
     {{- include "color-turf.labels" . | nindent 4 }}
@@ -36,7 +62,6 @@ spec:
       {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
       nodePort: {{ .Values.service.nodePort }}
       {{- end }}
-{{- if .Values.canary.enabled }}
 ---
 apiVersion: v1
 kind: Service
@@ -47,10 +72,15 @@ metadata:
     app.kubernetes.io/component: game-server
     color-turf/release-channel: canary
 spec:
+  # Keep the Canary route resolvable before a Canary Deployment exists.
+  # Enabling Canary switches this selector to the isolated Canary Pods.
   selector:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: game-server
+    {{- if .Values.canary.enabled }}
     color-turf/release-channel: canary
+    {{- else }}
+    color-turf/release-channel: stable
+    {{- end }}
   ports:
     - { name: http, port: 3001, targetPort: http }
-{{- end }}

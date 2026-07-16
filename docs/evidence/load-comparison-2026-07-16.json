@@ -1,0 +1,62 @@
+{
+  "ok": true,
+  "testedAt": "2026-07-16T12:43:25.441Z",
+  "config": {
+    "botCount": 50,
+    "inputRateHz": 10,
+    "gridSize": 108,
+    "warmupMs": 1500,
+    "measureMs": 5000,
+    "clientWorkers": 10
+  },
+  "delta": {
+    "mode": "delta",
+    "roomCode": "2GKUM",
+    "connectedBots": 50,
+    "expectedInputEvents": 2500,
+    "inputEventsSent": 2500,
+    "inputDeliveryRatio": 1,
+    "representativeAveragePayloadBytes": 10969.3,
+    "estimatedAggregateClientBytesPerSecond": 15660796,
+    "server": {
+      "rejectedInputEvents": 0,
+      "inputLatencyP95Ms": 9,
+      "tickP95Ms": 0.456,
+      "broadcastP95Ms": 12.736,
+      "statePayloadP95Bytes": 12811,
+      "eventLoopLagP95Ms": 44.532,
+      "cpuPercent": 12.281,
+      "memoryRssMb": 110.336
+    }
+  },
+  "full": {
+    "mode": "full",
+    "roomCode": "T2KKV",
+    "connectedBots": 50,
+    "expectedInputEvents": 2500,
+    "inputEventsSent": 2500,
+    "inputDeliveryRatio": 1,
+    "representativeAveragePayloadBytes": 60250.7,
+    "estimatedAggregateClientBytesPerSecond": 69204867.7,
+    "server": {
+      "rejectedInputEvents": 0,
+      "inputLatencyP95Ms": 29,
+      "tickP95Ms": 0.402,
+      "broadcastP95Ms": 20.356,
+      "statePayloadP95Bytes": 67911,
+      "eventLoopLagP95Ms": 70.058,
+      "cpuPercent": 53.488,
+      "memoryRssMb": 113.656
+    }
+  },
+  "comparison": {
+    "representativeAveragePayloadRatio": 5.493,
+    "estimatedAggregateClientBytesPerSecondRatio": 4.419,
+    "serverStatePayloadP95Ratio": 5.301,
+    "broadcastP95Ratio": 1.598,
+    "tickP95Ratio": 0.882,
+    "eventLoopLagP95Ratio": 1.573,
+    "cpuRatio": 4.355
+  },
+  "totalRuntimeMs": 27050.4
+}

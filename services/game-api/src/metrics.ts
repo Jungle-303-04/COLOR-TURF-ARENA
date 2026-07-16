@@ -3,6 +3,12 @@ import type { RoomSnapshot, RoomSummary, ServerIdentity, StateDelta } from "@pai
 
 const durationBuckets = [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1];
 
+export interface SnapshotAgeSample {
+  roomCode: string;
+  cluster: string;
+  ageSeconds: number;
+}
+
 export const createMetrics = () => {
   const register = new Registry();
   register.setDefaultLabels({ service: "color-turf-game-server" });
@@ -99,7 +105,12 @@ export const createMetrics = () => {
     registers: [register],
   });
 
-  const refresh = (identity: ServerIdentity, sockets: number, rooms: RoomSummary[]) => {
+  const refresh = (
+    identity: ServerIdentity,
+    sockets: number,
+    rooms: RoomSummary[],
+    snapshotAges: SnapshotAgeSample[] = [],
+  ) => {
     gameWebsocketConnections.reset();
     gameWebsocketConnections.set({
       version: identity.version,
@@ -120,6 +131,13 @@ export const createMetrics = () => {
           cluster: room.cluster,
         }, room.teamPlayers[team]);
       }
+    }
+    gameSnapshotAge.reset();
+    for (const snapshot of snapshotAges) {
+      gameSnapshotAge.set({
+        room_id: snapshot.roomCode,
+        cluster: snapshot.cluster,
+      }, Math.max(0, snapshot.ageSeconds));
     }
   };
 

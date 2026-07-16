@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import type { InputPayload, InputResult, JoinResult, PlayerPublic, RoomSnapshot, StateDelta, Vector2 } from "@paint-arena/shared";
 import { BrandMark } from "../components/AppShell";
 import { ArenaCanvasRenderer, DEFAULT_CAMERA_SIZE } from "../game/arenaCanvas";
+import { api } from "../lib/api";
 import { createClientSessionId } from "../lib/clientId";
 import { formatTimer } from "../lib/format";
 import { buildJoinPayload } from "../lib/joinPayload";
@@ -113,49 +114,71 @@ export const JoinPage = () => {
   }, [roomCode, saveSession]);
 
   useEffect(() => {
-    const socket = createSocket();
-    socketRef.current = socket;
-    socket.on("connect", () => {
-      setConnection(joinedRef.current ? "restoring" : "connected");
-      join();
-    });
-    socket.on("disconnect", (reason) => {
-      joinAttemptRef.current?.abort();
-      joinAttemptRef.current = null;
-      setConnection("offline");
-      if (joinedRef.current) setMessage("최근 게임 상태를 복구하고 있습니다.");
-      if (reason === "io server disconnect") window.setTimeout(() => socket.connect(), 500);
-    });
-    socket.on("connect_error", () => setConnection("offline"));
-    socket.on("join_accepted", (assigned: PlayerPublic) => setPlayer(assigned));
-    socket.on("room_snapshot", (next: RoomSnapshot) => {
-      setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current);
-      setPlayer(next.players.find((candidate) => candidate.id === storedRef.current.sessionId) ?? null);
-      sequenceRef.current = Math.max(sequenceRef.current, next.sequence);
-      saveSession({ lastReceivedSequence: next.sequence });
-    });
-    socket.on("state_delta", (delta: StateDelta) => {
-      setSnapshot((current) => applyStateDelta(current, delta));
-      const me = delta.players.find((candidate) => candidate.id === storedRef.current.sessionId);
-      if (me) setPlayer(me);
-      sequenceRef.current = Math.max(sequenceRef.current, delta.sequence);
-      saveSession({ lastReceivedSequence: delta.sequence });
-    });
-    socket.connect();
-    const pingTimer = window.setInterval(() => {
-      if (!socket.connected) return;
-      const sentAt = Date.now();
-      socket.emit("client_ping", { sentAt }, () => setRtt(Date.now() - sentAt));
-    }, 2000);
+    let disposed = false;
+    let socket: ReturnType<typeof createSocket> | null = null;
+    let pingTimer: number | null = null;
+
+    const connect = async () => {
+      let socketPath = "/socket.io";
+      try {
+        socketPath = (await api.roomConnection(roomCode)).socketPath;
+      } catch {
+        // The Stable gateway can still coordinate the room while a routing
+        // lookup is temporarily unavailable during failover.
+      }
+      if (disposed) return;
+
+      socket = createSocket(socketPath);
+      socketRef.current = socket;
+      socket.on("connect", () => {
+        setConnection(joinedRef.current ? "restoring" : "connected");
+        join();
+      });
+      socket.on("disconnect", (reason) => {
+        joinAttemptRef.current?.abort();
+        joinAttemptRef.current = null;
+        setConnection("offline");
+        if (joinedRef.current) setMessage("최근 게임 상태를 복구하고 있습니다.");
+        if (reason === "io server disconnect") window.setTimeout(() => socket?.connect(), 500);
+      });
+      socket.on("connect_error", () => setConnection("offline"));
+      socket.on("join_accepted", (assigned: PlayerPublic) => setPlayer(assigned));
+      socket.on("room_snapshot", (next: RoomSnapshot) => {
+        setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current);
+        setPlayer(next.players.find((candidate) => candidate.id === storedRef.current.sessionId) ?? null);
+        sequenceRef.current = Math.max(sequenceRef.current, next.sequence);
+        saveSession({ lastReceivedSequence: next.sequence });
+      });
+      socket.on("state_delta", (delta: StateDelta) => {
+        setSnapshot((current) => applyStateDelta(current, delta));
+        const me = delta.players.find((candidate) => candidate.id === storedRef.current.sessionId);
+        if (me) setPlayer(me);
+        sequenceRef.current = Math.max(sequenceRef.current, delta.sequence);
+        saveSession({ lastReceivedSequence: delta.sequence });
+      });
+      socket.connect();
+      pingTimer = window.setInterval(() => {
+        if (!socket?.connected) return;
+        const sentAt = Date.now();
+        socket.emit("client_ping", { sentAt }, () => {
+          const measuredRtt = Date.now() - sentAt;
+          setRtt(measuredRtt);
+          socket?.emit("client_rtt", { rttMs: measuredRtt });
+        });
+      }, 2000);
+    };
+
+    void connect();
     return () => {
+      disposed = true;
       joinAttemptRef.current?.abort();
       joinAttemptRef.current = null;
       if (inputTimerRef.current) window.clearInterval(inputTimerRef.current);
-      window.clearInterval(pingTimer);
-      socket.disconnect();
+      if (pingTimer !== null) window.clearInterval(pingTimer);
+      socket?.disconnect();
       socketRef.current = null;
     };
-  }, [join, saveSession]);
+  }, [join, roomCode, saveSession]);
 
   useEffect(() => {
     if (!canvasRef.current || !minimapCanvasRef.current) return;

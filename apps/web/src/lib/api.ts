@@ -26,6 +26,12 @@ export const api = {
   verifyAdmin: () => requestJson<{ ok: boolean }>("/api/admin/session", undefined, true),
   listRooms: () => requestJson<{ rooms: RoomSummary[] }>("/api/rooms"),
   getRoom: (roomCode: string) => requestJson<{ room: RoomSnapshot }>(`/api/rooms/${roomCode}`),
+  roomConnection: (roomCode: string) => requestJson<{
+    roomId: string;
+    releaseChannel: "stable" | "canary";
+    socketPath: string;
+    sessionId: string;
+  }>(`/api/rooms/${roomCode}/join`, { method: "POST" }),
   systemStatus: () => requestJson<SystemStatus>("/api/system/status"),
   createRoom: (settings: {
     durationSeconds: number;
@@ -58,7 +64,9 @@ export const api = {
     method: "POST",
     body: JSON.stringify({ action, count }),
   }, true),
-  ops: () => requestJson<OpsSnapshot>("/api/ops"),
+  ops: (releaseChannel?: "stable" | "canary") => requestJson<OpsSnapshot>(
+    `/api/ops${releaseChannel ? `?releaseChannel=${releaseChannel}` : ""}`,
+  ),
   triggerMemoryOom: () => requestJson<OpsSnapshot>("/api/admin/faults/memory-oom", {
     method: "POST",
     body: JSON.stringify({}),

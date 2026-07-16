@@ -1,0 +1,21 @@
+# DANGEROUS: use only in an isolated, disposable demo namespace with no public
+# ingress, tunnel, or untrusted network access. This file intentionally removes
+# admin authentication and permits a request that OOM-kills a game-server Pod.
+server:
+  publicBaseUrl: ""
+
+auth:
+  demoAdminAuthDisabled: true
+
+chaos:
+  allowPodOom: true
+
+service:
+  type: ClusterIP
+  nodePort: null
+
+ingress:
+  enabled: false
+
+cloudflare:
+  enabled: false

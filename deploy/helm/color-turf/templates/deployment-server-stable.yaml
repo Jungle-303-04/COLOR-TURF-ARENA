@@ -44,6 +44,10 @@ spec:
             - { name: RELEASE_CHANNEL, value: stable }
             - { name: BROADCAST_MODE, value: {{ .Values.server.broadcastMode | quote }} }
             - { name: DEMO_TICK_DELAY_MS, value: {{ .Values.server.tickDelayMs | quote }} }
+            {{- if and .Values.canary.enabled (ne .Values.server.clusterName "dr") }}
+            - { name: CANARY_API_URL, value: "http://server-canary:3001" }
+            - { name: PARTITION_ROOMS_BY_RELEASE, value: "true" }
+            {{- end }}
             - name: POD_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
           livenessProbe:

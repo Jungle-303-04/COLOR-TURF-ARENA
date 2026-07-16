@@ -9,9 +9,9 @@
 | 항목 | 결과 | 실행 증거 |
 | --- | --- | --- |
 | TypeScript | PASS | `npm run typecheck`: shared, game-api, bot, web 모두 exit 0 |
-| 테스트 | PASS | `npm test`: game-api 19 passed / Redis integration 1 skipped, web 17 passed |
+| 테스트 | PASS | `npm test`: game-api 23 passed / Redis integration 1 skipped, web 17 passed |
 | 프로덕션 빌드 | PASS | `npm run build`: 네 workspace 모두 성공, Vite 99 modules build |
-| Compose 정적 구성 | PASS | `docker compose config --quiet`, 기본 서비스가 Redis/Stable/DR/Web으로 해석됨. Docker Engine이 꺼져 있어 이번 변경의 이미지·runtime은 재실행하지 않음 |
+| Compose 정적 구성 | PASS | `docker compose config --quiet`, 기본 서비스가 Redis/Stable/Canary/DR/Web으로 해석됨 |
 | Kustomize | PASS | `kubectl kustomize deploy/k8s` exit 0 |
 | Helm | PASS | 기본·Primary·Canary-bad·DR values에 대해 `helm lint`와 `helm template` exit 0 |
 | PowerShell 도구 | PASS | `scripts/*.ps1` 5개 PowerShell parser error 0 |
@@ -51,7 +51,7 @@
 - 기본 Compose에 DR을 포함하고 Web readiness가 Stable과 DR 모두를 기다리도록 했으며, Prometheus도 DR `/metrics`를 수집한다.
 - 최근 운영 이벤트는 Snapshot storage의 Redis 공유 로그에 최대 200개를 저장하고, `/api/ops`와 `/api/ops/events`가 최신 로그를 merge/dedupe한다. Platform event POST는 저장 완료 뒤 202를 반환하며, Stable 종료 뒤 DR에서도 이전 장애 이벤트가 남는 Redis 통합 테스트를 추가했다.
 - `scripts/verify-compose-failover.mjs`는 실제 방·Socket Session·채색 상태와 Redis Snapshot을 만든 뒤 기본적으로 Stable 컨테이너를 `SIGKILL`하고, DR에서 match/team/nickname/score/`matchEndsAt` 및 Snapshot 이상의 sequence·paint와 `/version`이 복구되는지 검사한 후 Stable을 복원한다. graceful 모드도 선택할 수 있으며 `node --check`는 통과했다.
-- 이번 턴에는 사용자의 서버 종료 요청을 유지했고 Docker Engine도 꺼져 있어 이 새 공개 URL failover 스크립트를 runtime으로 실행하지 않았다. 실행·증거 수집 절차는 `docs/external-verification-runbook.md`에 분리했다.
+- 2026-07-16 재검증에서 Stable을 실제 `SIGKILL`한 방 `KLPHV`가 같은 공개 URL에서 8.859초 만에 DR로 복구됐다. match/team/nickname/`matchEndsAt`과 Snapshot 이상의 sequence·paint를 모두 유지했으며 결과는 `docs/evidence/compose-failover-2026-07-16.json`에 저장했다.
 
 ## 2026-07-14 브라우저 검증 기록(레이아웃 확장 전)
 
@@ -72,6 +72,17 @@
 - 관리자 개요 탭에서 `모바일-QA`와 봇의 서버 좌표가 실시간 참가자 목록에 노출되는지 확인했고, `캔버스 크게 보기` 모달에서 정사각형 전체 월드와 팀 점유율·인원·소켓 수를 확인했다.
 - 증빙 이미지는 `docs/evidence/screenshots/admin-overview-tabs.png`, `admin-controls-tabs.png`, `admin-metrics-tabs.png`, `admin-canvas-modal.png`, `player-live-square.png`에 저장했다.
 
+## 2026-07-16 자동 E2E·Canary·부하 비교
+
+- Playwright Chromium이 빈 임시 포트에 메모리 API와 Vite를 직접 띄워 관리자 로그인·방 생성, 모바일 `390×844` 참가, 닉네임·팀 배정, 경기 시작, 실제 Pointer 조이스틱, 관전 점수 증가, Paint Boost 양 화면 표시, offline → online Overlay와 동일 Session·닉네임·팀·sequence 복구를 검증했다. 기본 실행과 `--repeat-each=3` 모두 통과했고 teardown 뒤 임시 listener는 남지 않았다.
+- Stable API가 Canary 방 생성을 `server-canary`로 위임하고 Join API가 `/socket/canary`를 반환하는 경로를 Compose에서 검증했다. 방 `WQ2X9`은 `compose-canary-primary`, `v1.2.0`, `releaseChannel=canary`, `broadcastMode=full`로 실제 연결·이동·채색됐고 Canary Bot 2개도 별도 Socket 경로로 접속했다. 결과는 `docs/evidence/canary-routing-2026-07-16.json`에 저장했다.
+- 관리자 운영 지표는 선택 방의 release channel을 `/api/ops?releaseChannel=...`로 조회한다. 별도 Canary가 있으면 Canary 프로세스의 실제 CPU·Event Loop·Payload·Socket을 사용하고, 단일 프로세스 개발 환경에서는 Stable 프로세스라는 사실을 그대로 표시한다. `docs/evidence/screenshots/admin-canary-metrics.png`에서 `CANARY · v1.2.0`, 실제 지표 카드·그래프와 출처 툴팁을 확인했다.
+- WebSocket RTT는 클라이언트와 서버의 서로 다른 시계에서 도착 시간을 빼지 않는다. 브라우저가 `client_ping` ACK까지 직접 잰 값을 `client_rtt`로 보고하며, 42.5ms 표본이 운영 P95에 그대로 반영되는 통합 테스트를 추가했다.
+- `game_snapshot_age_seconds`는 저장 순간마다 0으로 고정하지 않고 마지막 성공 Snapshot 시각부터의 실제 경과시간을 scrape 시 계산한다. Compose 실측에서 Canary 방은 `0.112초`, DR 방들은 `0.137~0.308초` 범위로 노출됐다.
+- `npm run load:compare`는 독립된 Delta/Full 서버와 10개 client worker를 사용해 50 Bot × 10Hz를 각각 5초 측정한다. 양쪽 모두 `2,500/2,500` 입력·거부 0이었고 Full/Delta는 대표 Payload `5.493배`, 서버 Payload P95 `5.301배`, Broadcast P95 `1.598배`, Event Loop P95 `1.573배`, CPU `4.355배`였다. 원본은 `docs/evidence/load-comparison-2026-07-16.json`에 저장했다.
+- Helm/Kustomize에는 Nginx 시작을 막던 누락 `server-dr` DNS와 항상 해석 가능한 `server-canary` Service를 추가했다. 공개 Primary values는 관리자 인증을 유지하고 OOM 주입을 끄며, 인증 우회·실제 OOM은 외부 공개 경로가 없는 `values-isolated-chaos-demo.yaml`에만 분리했다.
+- GitHub Actions CI는 Node 24에서 typecheck/test/build, Playwright, 부하 비교, Compose config, Helm lint와 Kustomize render를 모든 push와 PR에서 실행한다.
+
 ## 아직 외부 환경 증거가 필요한 항목
 
 - 발표 PC와 물리 휴대폰 2대 이상을 같은 Wi-Fi에 연결한 QR 접속, touch drag, 화면 회전, 재접속 확인
@@ -84,4 +95,4 @@
 
 ## 현재 실행 상태
 
-검증을 위해 임시 실행한 로컬 API(3001), Web(5173), Compose Web(8080), Prometheus(9090)는 모두 종료했고 네 포트가 Listen 상태가 아님을 확인했다. Docker Desktop도 현재 실행 중이 아니며 Compose·Kubernetes runtime 증거는 위에 기록한 7월 15일 검증 결과다.
+2026-07-16 최종 검증 뒤 `docker compose stop`으로 Redis, Stable, Canary, DR, Web을 모두 종료했다. `3001`, `3002`, `3003`, `5173`, `8080`, `9090` 여섯 포트가 Listen 상태가 아님을 확인했다. Docker Desktop의 기존 kind control-plane 컨테이너는 이 저장소의 Compose 서버가 아니므로 변경하지 않았다.

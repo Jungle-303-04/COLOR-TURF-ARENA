@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "testedAt": "2026-07-16T12:48:40.000Z",
+  "roomCode": "WQ2X9",
+  "createSocketPath": "/socket/canary",
+  "joinSocketPath": "/socket/canary",
+  "server": {
+    "version": "v1.2.0",
+    "gitSha": "local",
+    "podName": "compose-canary-primary",
+    "cluster": "primary",
+    "releaseChannel": "canary",
+    "broadcastMode": "full"
+  },
+  "player": {
+    "nickname": "Canary-QA",
+    "team": "B",
+    "connected": true
+  },
+  "sequence": 3,
+  "paintedCells": 18,
+  "botCheck": {
+    "roomCode": "98EXP",
+    "connectedBots": 2,
+    "teams": ["A", "B"]
+  }
+}

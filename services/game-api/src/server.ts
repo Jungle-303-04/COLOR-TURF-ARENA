@@ -53,6 +53,11 @@ export interface GameServerOptions {
   redisUrl?: string;
   snapshotStorage?: SnapshotStorage;
   snapshotIntervalMs?: number;
+  socketPath?: string;
+  stableSocketPath?: string;
+  canarySocketPath?: string;
+  canaryApiUrl?: string;
+  partitionRoomsByRelease?: boolean;
   demoTickDelayMs?: number;
   memoryOomAllocate?: (bytes: number) => Buffer;
   memoryOomSchedule?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
@@ -148,7 +153,17 @@ const createConfig = (body: Record<string, unknown> = {}): GameConfig => {
 export const createGameServer = (options: GameServerOptions = {}) => {
   const app = express();
   const httpServer: HttpServer = createServer(app);
-  const socketPath = process.env.SOCKET_PATH ?? "/socket.io";
+  const processReleaseChannel = options.releaseChannel ?? (process.env.RELEASE_CHANNEL === "canary" ? "canary" : "stable");
+  const socketPath = options.socketPath ?? process.env.SOCKET_PATH ?? "/socket.io";
+  const stableSocketPath = options.stableSocketPath
+    ?? process.env.STABLE_SOCKET_PATH
+    ?? (processReleaseChannel === "stable" ? socketPath : "/socket.io");
+  const canarySocketPath = options.canarySocketPath
+    ?? process.env.CANARY_SOCKET_PATH
+    ?? (processReleaseChannel === "canary" ? socketPath : "/socket/canary");
+  const canaryApiUrl = (options.canaryApiUrl ?? process.env.CANARY_API_URL ?? "").replace(/\/$/, "");
+  const partitionRoomsByRelease = options.partitionRoomsByRelease
+    ?? process.env.PARTITION_ROOMS_BY_RELEASE === "true";
   const io = new SocketServer(httpServer, {
     path: socketPath,
     cors: { origin: true, credentials: true },
@@ -197,6 +212,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     lastSnapshotAt: null,
     cpuPercent: 0,
   };
+  const persistedSnapshotAtByRoom = new Map<string, number>();
   let lastCpuUsage = process.cpuUsage();
   let lastCpuSampleAt = Date.now();
   const runtimeMode = {
@@ -239,9 +255,14 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     gitSha: options.gitSha ?? process.env.GIT_SHA ?? "local",
     podName: options.podName ?? process.env.POD_NAME ?? "local-process",
     cluster: runtimeMode.activeCluster,
-    releaseChannel: options.releaseChannel ?? (process.env.RELEASE_CHANNEL === "canary" ? "canary" : "stable"),
+    releaseChannel: processReleaseChannel,
     broadcastMode: runtimeMode.forceFullBroadcast ? "full" : configuredBroadcastMode,
   });
+
+  const roomSocketPath = (releaseChannel: "stable" | "canary"): string => {
+    if (releaseChannel === "stable") return stableSocketPath;
+    return canaryApiUrl || processReleaseChannel === "canary" ? canarySocketPath : socketPath;
+  };
 
   const roomIdentity = (room: GameRoom): ServerIdentity => ({
     ...baseIdentity(),
@@ -376,6 +397,16 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     return summarizeRoom(room.snapshot());
   });
 
+  const snapshotAgeSamples = (now = Date.now()) => roomStore.list().flatMap((room) => {
+    const snapshotCreatedAt = persistedSnapshotAtByRoom.get(room.roomCode);
+    if (snapshotCreatedAt === undefined) return [];
+    return [{
+      roomCode: room.roomCode,
+      cluster: baseIdentity().cluster,
+      ageSeconds: Math.max(0, (now - snapshotCreatedAt) / 1000),
+    }];
+  });
+
   const runtimeMetricSummary = () => ({
     tickMeanMs: stats.tickDurationsMs.length === 0 ? 0 : stats.tickDurationsMs.reduce((sum, value) => sum + value, 0) / stats.tickDurationsMs.length,
     tickP95Ms: percentile(stats.tickDurationsMs),
@@ -422,7 +453,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
           : "Kubernetes가 OOMKilled를 기록했고 컨테이너를 다시 시작하고 있습니다.",
       };
     }
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries);
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, summaries, snapshotAgeSamples(now));
     return {
       observedAt: new Date(now).toISOString(),
       server: {
@@ -462,7 +493,10 @@ export const createGameServer = (options: GameServerOptions = {}) => {
   const resolvePublicBaseUrl = (request?: Request): string => {
     const configured = options.publicBaseUrl ?? process.env.PUBLIC_BASE_URL;
     if (configured) return configured.replace(/\/$/, "");
-    if (request) return `${request.protocol}://${request.get("host")}`;
+    if (request) {
+      const forwardedHost = request.get("x-forwarded-host")?.split(",")[0]?.trim();
+      return `${request.protocol}://${forwardedHost || request.get("host")}`;
+    }
     return "http://localhost:5173";
   };
 
@@ -479,23 +513,79 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     : requireToken(adminToken);
   const requireOpsEvent = requireToken(opsEventToken);
 
+  const forwardCanaryRoomCreation = async (request: Request, response: Response): Promise<void> => {
+    try {
+      const upstream = await fetch(`${canaryApiUrl}/api/rooms`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${adminToken}`,
+          "content-type": "application/json",
+          "x-forwarded-host": request.get("host") ?? "",
+          "x-forwarded-proto": request.protocol,
+        },
+        body: JSON.stringify(request.body ?? {}),
+        signal: AbortSignal.timeout(5000),
+      });
+      const rawBody = await upstream.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody) as unknown;
+      } catch {
+        response.status(502).json({ error: "Canary room service returned an invalid response" });
+        return;
+      }
+      response.status(upstream.status).json(body);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary room service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+  };
+
+  const forwardCanaryOps = async (response: Response): Promise<void> => {
+    try {
+      const upstream = await fetch(`${canaryApiUrl}/api/ops`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      const rawBody = await upstream.text();
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody) as unknown;
+      } catch {
+        response.status(502).json({ error: "Canary telemetry service returned an invalid response" });
+        return;
+      }
+      response.status(upstream.status).json(body);
+    } catch (error) {
+      response.status(502).json({
+        error: `Canary telemetry service unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+  };
+
+  const saveRoomSnapshot = async (room: GameRoom): Promise<void> => {
+    setIdentity(room);
+    const started = performance.now();
+    const state = room.serialize();
+    await storage.save(state);
+    const elapsed = performance.now() - started;
+    persistedSnapshotAtByRoom.set(room.roomCode, state.snapshotCreatedAt);
+    stats.lastSnapshotAt = Math.max(stats.lastSnapshotAt ?? 0, state.snapshotCreatedAt);
+    metrics.gameSnapshotSaveDuration.observe({ cluster: baseIdentity().cluster }, elapsed / 1000);
+  };
+
   const persistRooms = async () => {
     const activeRoom = singleUseMode ? await storage.activeRoomCode() : null;
     for (const room of roomStore.list()) {
       if (activeRoom && room.roomCode !== activeRoom) {
         botManager.stopRoom(room.roomCode, false);
         roomStore.remove(room.roomCode);
+        persistedSnapshotAtByRoom.delete(room.roomCode);
         await storage.releaseLease(room.roomCode, ownerId);
         addEvent("room.expired", `Removed stale room ${room.roomCode} in single-use mode`, "system", room.roomCode);
         continue;
       }
-      setIdentity(room);
-      const started = performance.now();
-      await storage.save(room.serialize());
-      const elapsed = performance.now() - started;
-      stats.lastSnapshotAt = Date.now();
-      metrics.gameSnapshotSaveDuration.observe({ cluster: baseIdentity().cluster }, elapsed / 1000);
-      metrics.gameSnapshotAge.set({ room_id: room.roomCode, cluster: baseIdentity().cluster }, 0);
+      await saveRoomSnapshot(room);
     }
   };
 
@@ -508,9 +598,12 @@ export const createGameServer = (options: GameServerOptions = {}) => {
       : new Set<string>();
     for (const state of persistedRooms) {
       if (roomStore.get(state.roomCode)) continue;
+      if (partitionRoomsByRelease && state.config.releaseChannel !== processReleaseChannel) continue;
       if (!(await storage.acquireLease(state.roomCode, ownerId, leaseTtlMs))) continue;
       const recoveryStarted = performance.now();
       const room = roomStore.restore(state, true);
+      persistedSnapshotAtByRoom.set(room.roomCode, state.snapshotCreatedAt);
+      stats.lastSnapshotAt = Math.max(stats.lastSnapshotAt ?? 0, state.snapshotCreatedAt);
       for (const player of state.players) {
         if (player.connected && player.socketId && !liveSocketIds.has(player.socketId)) {
           room.disconnect(player.id, player.socketId);
@@ -551,6 +644,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
         if (renewed) continue;
         botManager.stopRoom(room.roomCode, false);
         roomStore.remove(room.roomCode);
+        persistedSnapshotAtByRoom.delete(room.roomCode);
         addEvent("ROOM_LEASE_LOST", `Stopped serving ${room.roomCode} after lease loss`, "system", room.roomCode);
         for (const socket of await io.fetchSockets()) {
           if ((socket.data as SocketData).roomCode === room.roomCode) socket.disconnect(true);
@@ -636,7 +730,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
             player: joined.player,
             snapshot,
             sessionId: command.sessionId,
-            socketPath,
+            socketPath: roomSocketPath(snapshot.config.releaseChannel),
             reconnected: joined.reconnected,
           },
         };
@@ -738,7 +832,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json(version);
   });
   app.get("/metrics", async (_request, response) => {
-    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries());
+    metrics.refresh(baseIdentity(), io.engine.clientsCount, roomSummaries(), snapshotAgeSamples());
     response.setHeader("Content-Type", metrics.register.contentType);
     response.send(await metrics.register.metrics());
   });
@@ -757,6 +851,15 @@ export const createGameServer = (options: GameServerOptions = {}) => {
 
   app.get("/api/rooms", async (_request, response) => response.json({ rooms: await clusterRoomSummaries() }));
   app.post("/api/rooms", requireAdmin, async (request, response) => {
+    const requestedConfig = createConfig(request.body as Record<string, unknown>);
+    if (requestedConfig.releaseChannel === "canary" && canaryApiUrl && processReleaseChannel !== "canary") {
+      await forwardCanaryRoomCreation(request, response);
+      return;
+    }
+    if (processReleaseChannel === "canary" && requestedConfig.releaseChannel !== "canary") {
+      response.status(409).json({ error: "Canary authority only creates canary rooms" });
+      return;
+    }
     if (singleUseMode) {
       const activeRoomCode = await storage.activeRoomCode();
       if (activeRoomCode) {
@@ -766,34 +869,34 @@ export const createGameServer = (options: GameServerOptions = {}) => {
             room: existing.snapshot,
             joinUrl: `${resolvePublicBaseUrl(request)}/play/${existing.snapshot.roomCode}`,
             screenUrl: `${resolvePublicBaseUrl(request)}/watch/${existing.snapshot.roomCode}`,
-            socketPath,
+            socketPath: roomSocketPath(existing.snapshot.config.releaseChannel),
             reused: true,
           });
           return;
         }
       }
     }
-    const room = roomStore.create(createConfig(request.body as Record<string, unknown>));
+    const room = roomStore.create(requestedConfig);
     if (singleUseMode) {
       await storage.activateSingleRoom(room.roomCode);
       for (const stale of [...roomStore.list()]) {
         if (stale.roomCode === room.roomCode) continue;
         botManager.stopRoom(stale.roomCode, false);
         roomStore.remove(stale.roomCode);
+        persistedSnapshotAtByRoom.delete(stale.roomCode);
         await storage.releaseLease(stale.roomCode, ownerId);
       }
       addEvent("single_use.reset", `Activated ${room.roomCode} and removed every previous game`, "admin", room.roomCode);
     }
     await storage.acquireLease(room.roomCode, ownerId, leaseTtlMs);
-    setIdentity(room);
-    await storage.save(room.serialize());
+    await saveRoomSnapshot(room);
     addEvent("room.created", `Room ${room.roomCode} created`, "admin", room.roomCode);
     const snapshot = broadcastSnapshot(room);
     response.status(201).json({
       room: snapshot,
       joinUrl: `${resolvePublicBaseUrl(request)}/play/${room.roomCode}`,
       screenUrl: `${resolvePublicBaseUrl(request)}/watch/${room.roomCode}`,
-      socketPath,
+      socketPath: roomSocketPath(snapshot.config.releaseChannel),
     });
   });
   const loadRoom = async (roomCode: string) => dispatchRoomCommand({ kind: "snapshot", roomCode });
@@ -814,7 +917,7 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json({
       roomId: result.snapshot.roomCode,
       releaseChannel: result.snapshot.config.releaseChannel,
-      socketPath,
+      socketPath: roomSocketPath(result.snapshot.config.releaseChannel),
       sessionId: randomUUID(),
     });
   });
@@ -883,7 +986,14 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     response.json({ action, count: sessionIds.length, sessionIds });
   });
 
-  app.get("/api/ops", async (_request, response) => response.json(await getOpsSnapshot()));
+  app.get("/api/ops", async (request, response) => {
+    const requestedChannel = request.query.releaseChannel === "canary" ? "canary" : "stable";
+    if (requestedChannel === "canary" && canaryApiUrl && processReleaseChannel !== "canary") {
+      await forwardCanaryOps(response);
+      return;
+    }
+    response.json(await getOpsSnapshot());
+  });
   app.get("/api/ops/events", async (_request, response) => {
     await syncSharedEvents();
     response.json({ events: events.slice(0, 100) });
@@ -1077,9 +1187,11 @@ export const createGameServer = (options: GameServerOptions = {}) => {
     socket.on("game.input", (payload: unknown, acknowledge?: (result: InputResult) => void) => void processInput(socket, payload, acknowledge));
     socket.on("client_ping", (payload: { sentAt?: number }, acknowledge?: (result: { sentAt: number; serverTimestamp: number }) => void) => {
       const sentAt = numeric(payload?.sentAt, Date.now());
-      const rtt = Math.max(0, Date.now() - sentAt);
-      pushWindow(stats.rttValuesMs, rtt);
       acknowledge?.({ sentAt, serverTimestamp: Date.now() });
+    });
+    socket.on("client_rtt", (payload: { rttMs?: number }) => {
+      const rttMs = numeric(payload?.rttMs, -1);
+      if (rttMs >= 0 && rttMs <= 60_000) pushWindow(stats.rttValuesMs, rttMs);
     });
     socket.on("disconnect", () => {
       stats.disconnects += 1;

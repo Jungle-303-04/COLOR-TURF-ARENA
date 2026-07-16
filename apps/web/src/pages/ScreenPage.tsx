@@ -25,8 +25,10 @@ export const ScreenPage = () => {
 
   useEffect(() => {
     void api.config().then((config) => { setBaseUrl(config.publicBaseUrl); setTickRateHz(config.tickRateHz); }).catch(() => undefined);
-    const socket = createSocket();
+    let disposed = false;
+    let socket: ReturnType<typeof createSocket> | null = null;
     let watchAttempt: AbortController | null = null;
+
     const watch = () => {
       watchAttempt?.abort();
       const controller = new AbortController();
@@ -35,7 +37,7 @@ export const ScreenPage = () => {
       setError("");
       void retryWithBackoff<WatchResult>(
         async () => {
-          if (!socket.connected) throw new Error("Socket disconnected during room recovery");
+          if (!socket?.connected) throw new Error("Socket disconnected during room recovery");
           return await socket.timeout(ROOM_RECOVERY_ACK_TIMEOUT_MS).emitWithAck("spectator_subscribe", { roomCode }) as WatchResult;
         },
         {
@@ -57,21 +59,37 @@ export const ScreenPage = () => {
         setError(result?.error ?? "게임 서버가 방 상태를 복구하지 못했습니다.");
       });
     };
-    socket.on("connect", watch);
-    socket.on("disconnect", () => {
-      watchAttempt?.abort();
-      watchAttempt = null;
-      setConnected(false);
-    });
-    socket.on("room_snapshot", (next: RoomSnapshot) => setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current));
-    socket.on("state_delta", (delta: StateDelta) => setSnapshot((current) => applyStateDelta(current, delta)));
-    socket.on("ops_event", (event: EventLogEntry) => setTimeline((current) => [event, ...current.filter((item) => item.id !== event.id)].slice(0, 8)));
-    socket.connect();
+
+    const connect = async () => {
+      let socketPath = "/socket.io";
+      try {
+        socketPath = (await api.roomConnection(roomCode)).socketPath;
+      } catch {
+        // Stable remains a valid coordination gateway during a short routing
+        // lookup outage, so keep the spectator reconnect path available.
+      }
+      if (disposed) return;
+
+      socket = createSocket(socketPath);
+      socket.on("connect", watch);
+      socket.on("disconnect", () => {
+        watchAttempt?.abort();
+        watchAttempt = null;
+        setConnected(false);
+      });
+      socket.on("room_snapshot", (next: RoomSnapshot) => setSnapshot((current) => !current || next.sequence >= current.sequence ? next : current));
+      socket.on("state_delta", (delta: StateDelta) => setSnapshot((current) => applyStateDelta(current, delta)));
+      socket.on("ops_event", (event: EventLogEntry) => setTimeline((current) => [event, ...current.filter((item) => item.id !== event.id)].slice(0, 8)));
+      socket.connect();
+    };
+
+    void connect();
     void api.ops().then((ops) => setTimeline(ops.recentEvents.slice(0, 8))).catch(() => undefined);
     return () => {
+      disposed = true;
       watchAttempt?.abort();
       watchAttempt = null;
-      socket.disconnect();
+      socket?.disconnect();
     };
   }, [roomCode]);
 

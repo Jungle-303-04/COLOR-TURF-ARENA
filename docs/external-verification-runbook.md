@@ -99,7 +99,7 @@ PASS 조건:
 
 ### 실제 OOMKilled 선택 검증
 
-격리된 데모 namespace에서만 `chaos.allowPodOom=true`로 배포한다. 관리자 버튼을 누른 뒤 다음 세 조건이 모두 확인되어야 PASS다.
+외부 Ingress/Tunnel이 없는 격리된 일회성 namespace에서만 `values-isolated-chaos-demo.yaml`을 추가해 배포한다. 이 values는 관리자 인증 우회와 `chaos.allowPodOom=true`를 의도적으로 함께 켜므로 공개 환경에는 절대 적용하지 않는다. 관리자 버튼을 누른 뒤 다음 세 조건이 모두 확인되어야 PASS다.
 
 1. `lastState.terminated.reason=OOMKilled`
 2. restart count 증가

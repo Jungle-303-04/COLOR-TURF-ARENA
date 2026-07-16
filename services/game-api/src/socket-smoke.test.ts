@@ -14,6 +14,16 @@ const waitForDelta = (socket: Socket, predicate: (delta: StateDelta) => boolean,
   };
   socket.on("state_delta", handle);
 });
+const waitForSnapshot = (socket: Socket, predicate: (snapshot: RoomSnapshot) => boolean, timeoutMs = 4000): Promise<RoomSnapshot> => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { socket.off("room_snapshot", handle); reject(new Error("Timed out waiting for matching room snapshot")); }, timeoutMs);
+  const handle = (snapshot: RoomSnapshot) => {
+    if (!predicate(snapshot)) return;
+    clearTimeout(timer);
+    socket.off("room_snapshot", handle);
+    resolve(snapshot);
+  };
+  socket.on("room_snapshot", handle);
+});
 const auth = { authorization: "Bearer test-admin", "content-type": "application/json" };
 
 describe("two-client Socket.IO and protected operations flow", () => {
@@ -274,12 +284,99 @@ describe("two-client Socket.IO and protected operations flow", () => {
     const persisted = await gameServer.storage.load(created.room.roomCode);
     expect(persisted?.players).toHaveLength(2);
 
+    first.emit("client_rtt", { rttMs: 42.5 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const ops = await (await fetch(`${running.url}/api/ops`)).json() as { server: { metrics: { websocketRttP95Ms: number } } };
+    expect(ops.server.metrics.websocketRttP95Ms).toBe(42.5);
+
     const metrics = await (await fetch(`${running.url}/metrics`)).text();
     expect(metrics).toContain("game_tick_duration_seconds");
     expect(metrics).toContain("game_state_payload_bytes");
     expect(metrics).toContain("game_snapshot_save_duration_seconds");
     expect(metrics).toContain("game_ops_events_total");
   }, 20_000);
+
+  it("reports the elapsed age of the last successful room snapshot", async () => {
+    const gameServer = createGameServer({ adminToken: "test-admin", snapshotIntervalMs: 10_000 });
+    const running = await gameServer.start(0, "127.0.0.1");
+    stop = gameServer.stop;
+
+    const createResponse = await fetch(`${running.url}/api/rooms`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ durationSeconds: 20, gridWidth: 40 }),
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as { room: RoomSnapshot };
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const metrics = await (await fetch(`${running.url}/metrics`)).text();
+    const ageLine = metrics.split("\n").find((line) => (
+      line.startsWith("game_snapshot_age_seconds{")
+      && line.includes(`room_id="${created.room.roomCode}"`)
+      && line.includes('cluster="primary"')
+    ));
+    expect(ageLine).toBeDefined();
+    const ageSeconds = Number(ageLine?.trim().split(/\s+/).at(-1));
+    expect(ageSeconds).toBeGreaterThan(0.03);
+    expect(ageSeconds).toBeLessThan(2);
+  });
+
+  it("sends full room snapshots on every changed tick in full broadcast mode", async () => {
+    const gameServer = createGameServer({
+      adminToken: "test-admin",
+      broadcastMode: "full",
+      snapshotIntervalMs: 10_000,
+    });
+    const running = await gameServer.start(0, "127.0.0.1");
+    stop = gameServer.stop;
+
+    const createResponse = await fetch(`${running.url}/api/rooms`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ durationSeconds: 20, gridWidth: 40 }),
+    });
+    const created = await createResponse.json() as { room: RoomSnapshot };
+    const client = createClient(running.url, { transports: ["websocket"], reconnection: false });
+    clients.push(client);
+    await new Promise<void>((resolve) => client.once("connect", resolve));
+    const session = { roomCode: created.room.roomCode, sessionId: "session-full-mode", nickname: "Full Mode" };
+    expect((await emitAck<JoinResult>(client, "join_room", session)).ok).toBe(true);
+
+    const startResponse = await fetch(`${running.url}/api/admin/rooms/${created.room.roomCode}/start`, {
+      method: "POST",
+      headers: auth,
+    });
+    const started = ((await startResponse.json()) as { room: RoomSnapshot }).room;
+    const startPosition = started.players.find((player) => player.id === session.sessionId)?.position;
+    expect(startPosition).toBeDefined();
+
+    let deltaCount = 0;
+    client.on("state_delta", () => { deltaCount += 1; });
+    const movedSnapshot = waitForSnapshot(client, (snapshot) => {
+      const current = snapshot.players.find((player) => player.id === session.sessionId)?.position;
+      return snapshot.sequence > started.sequence
+        && snapshot.scores.paintedCells > started.scores.paintedCells
+        && current !== undefined
+        && startPosition !== undefined
+        && Math.hypot(current.x - startPosition.x, current.y - startPosition.y) > 0.01;
+    });
+    expect(await emitAck<InputResult>(client, "player_input", {
+      ...session,
+      sequence: 1,
+      sentAt: Date.now(),
+      direction: { x: 1, y: 0 },
+    })).toEqual({ ok: true });
+
+    const full = await movedSnapshot;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(full.server.broadcastMode).toBe("full");
+    expect(full.grid).toHaveLength(40 * 40);
+    expect(deltaCount).toBe(0);
+
+    const metrics = await (await fetch(`${running.url}/metrics`)).text();
+    expect(metrics).toMatch(/game_state_payload_bytes_count\{[^}]*mode="full"/);
+  });
 
   it("exposes one real memory fault path and reports allocation progress", async () => {
     vi.stubEnv("ALLOW_DEMO_OOM_KILL", "true");

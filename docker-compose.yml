@@ -53,6 +53,9 @@ services:
       CLUSTER_NAME: primary
       RELEASE_CHANNEL: stable
       BROADCAST_MODE: delta
+      CANARY_API_URL: http://server-canary:3001
+      CANARY_SOCKET_PATH: /socket/canary
+      PARTITION_ROOMS_BY_RELEASE: "true"
       POD_NAME: compose-stable-primary
       IMAGE_TAG: color-turf-game-server:${IMAGE_TAG:-local}
     ports:
@@ -60,13 +63,16 @@ services:
 
   server-canary:
     <<: *server-base
-    profiles: ["topology"]
     environment:
       <<: *server-environment
       SERVER_VERSION: ${CANARY_SERVER_VERSION:-v1.2.0}
       CLUSTER_NAME: primary
       RELEASE_CHANNEL: canary
       BROADCAST_MODE: full
+      SOCKET_PATH: /socket/canary
+      CANARY_SOCKET_PATH: /socket/canary
+      PARTITION_ROOMS_BY_RELEASE: "true"
+      BOT_GATEWAY_URL: http://server-canary:3001
       DEMO_TICK_DELAY_MS: ${CANARY_TICK_DELAY_MS:-250}
       POD_NAME: compose-canary-primary
       IMAGE_TAG: color-turf-game-server:${IMAGE_TAG:-local}
@@ -102,6 +108,8 @@ services:
       server-stable:
         condition: service_healthy
       server-dr:
+        condition: service_healthy
+      server-canary:
         condition: service_healthy
     ports:
       - "8080:8080"

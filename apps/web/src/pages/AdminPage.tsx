@@ -133,6 +133,7 @@ export const AdminPage = () => {
   const adminSocketReadyRef = useRef(false);
   const adminWatchAttemptRef = useRef<AbortController | null>(null);
   const updateCountRef = useRef(0);
+  const selectedMetricChannelRef = useRef<"stable" | "canary">("stable");
 
   const verify = useCallback(async () => {
     try {
@@ -159,6 +160,7 @@ export const AdminPage = () => {
   }, [verify]);
 
   const acceptOpsSnapshot = useCallback((snapshot: OpsSnapshot) => {
+    if (snapshot.server.identity.releaseChannel !== selectedMetricChannelRef.current) return;
     setOps(snapshot);
     setRooms(snapshot.rooms);
     const observedAt = Date.parse(snapshot.observedAt);
@@ -304,6 +306,35 @@ export const AdminPage = () => {
       colorB: room.config.teams.B.color,
     });
   }, [room?.roomCode]);
+
+  useEffect(() => {
+    const releaseChannel = room?.config.releaseChannel ?? "stable";
+    selectedMetricChannelRef.current = releaseChannel;
+    setMetricHistory([]);
+    if (!authorized) return;
+
+    let disposed = false;
+    const refreshSelectedChannel = () => {
+      void api.ops(releaseChannel).then((snapshot) => {
+        if (disposed) return;
+        // A local single-process setup truthfully reports Stable process
+        // telemetry even for a logical Canary room. Dedicated deployments
+        // return Canary identity here and the Stable socket stream is ignored.
+        selectedMetricChannelRef.current = snapshot.server.identity.releaseChannel;
+        acceptOpsSnapshot(snapshot);
+      }).catch((loadError: unknown) => {
+        if (!disposed) setError(loadError instanceof Error ? loadError.message : "선택 채널의 운영 지표를 불러오지 못했습니다.");
+      });
+    };
+    refreshSelectedChannel();
+    if (releaseChannel !== "canary") return () => { disposed = true; };
+
+    const timer = window.setInterval(refreshSelectedChannel, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [acceptOpsSnapshot, authorized, room?.config.releaseChannel]);
 
   useEffect(() => {
     if (activeTab !== "overview" || !canvasRef.current) return;
@@ -498,7 +529,7 @@ export const AdminPage = () => {
           </div>
 
           <section className="panel ops-summary-panel">
-            <div className="panel-heading"><div><span className="panel-kicker">한눈에 보는 상태</span><h2>게임 서버 성능 여유</h2></div><span className="actual-tag">실측 · 최근 120초</span></div>
+            <div className="panel-heading"><div><span className="panel-kicker">한눈에 보는 상태</span><h2>게임 서버 성능 여유</h2></div><span className="actual-tag">{ops?.server.identity.releaseChannel.toUpperCase() ?? "—"} · 실측 120초</span></div>
             <div className="ops-kpi-grid">
               <MetricKpi label="게임 틱 P95" value={`${formatNumber(tickP95Ms, 1)}ms`} description="최근 Tick 처리시간의 95백분위다. 30Hz에서는 한 Tick이 약 33.3ms 안에 끝나야 다음 판정을 제시간에 수행한다." source="/api/ops → server.metrics.tickP95Ms · GameRoom.tick() 실행시간" threshold={`Tick 예산 ${formatNumber(tickBudgetMs, 1)}ms`} utilization={tickUtilization} tone={metricTone(tickUtilization)} />
               <MetricKpi label="입력 지연 P95" value={`${formatNumber(inputLatencyP95Ms, 1)}ms`} description="휴대폰이 기록한 전송 시각부터 서버가 입력을 검증할 때까지 걸린 시간의 95백분위다." source="/api/ops → server.inputLatencyP95Ms · player_input.sentAt" threshold="주의 70ms · 위험 100ms" utilization={inputLatencyUtilization} tone={metricTone(inputLatencyUtilization)} />
@@ -507,12 +538,12 @@ export const AdminPage = () => {
             </div>
           </section>
 
-          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">가짜 값 없음</span></div><div className="service-metric-grid">
+          <section className="panel service-status-panel"><div className="panel-heading"><div><span className="panel-kicker">서비스 운영</span><h2>실시간 서버 상태</h2></div><span className="actual-tag">{ops ? `${ops.server.identity.releaseChannel.toUpperCase()} · ${ops.server.identity.version}` : "연결 중"}</span></div><div className="service-metric-grid">
             <div><MetricLabel label="서버 Tick" description="서버 권위 판정과 상태 Delta 전송의 목표 빈도다." source="/api/config → tickRateHz" /><strong>{tickRateHz}Hz</strong></div>
             <div><MetricLabel label="연결 소켓" description="현재 game-api에 연결된 플레이어·봇·관전자·관리자 Socket.IO 연결 수다." source="/api/ops → server.connectedSockets · io.engine.clientsCount" /><strong>{ops?.server.connectedSockets ?? 0}</strong></div>
             <div><MetricLabel label="게임 틱 P95" description="최근 게임 Tick 처리시간 표본의 95백분위다." source="/api/ops → server.metrics.tickP95Ms" /><strong>{formatNumber(tickP95Ms, 1)}ms</strong></div>
             <div><MetricLabel label="전송 P95" description="상태 Snapshot 또는 Delta를 직렬화하고 전송 요청하는 처리시간의 95백분위다." source="/api/ops → server.metrics.broadcastP95Ms" /><strong>{formatNumber(ops?.server.metrics.broadcastP95Ms ?? 0, 1)}ms</strong></div>
-            <div><MetricLabel label="왕복 지연 P95" description="클라이언트 ping 전송 시각과 서버 수신 시각의 차이다. 이름은 RTT지만 현재 서버 지표는 완전한 왕복이 아닌 도착 지연 대체값이다." source="/api/ops → server.metrics.websocketRttP95Ms · client_ping.sentAt" /><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div>
+            <div><MetricLabel label="왕복 지연 P95" description="브라우저가 Socket ping을 보내고 ACK를 받을 때까지 직접 측정해 서버에 보고한 실제 왕복시간의 95백분위다." source="/api/ops → server.metrics.websocketRttP95Ms · client_ping ACK → client_rtt.rttMs" /><strong>{formatNumber(ops?.server.metrics.websocketRttP95Ms ?? 0, 1)}ms</strong></div>
             <div><MetricLabel label="상태 크기 P95" description="최근 Snapshot 또는 Delta JSON payload 크기의 95백분위다." source="/api/ops → server.metrics.statePayloadBytes · Buffer.byteLength" /><strong>{formatNumber(ops?.server.metrics.statePayloadBytes ?? 0)}B</strong></div>
             <div><MetricLabel label="스냅샷 경과" description="가장 최근 Redis Snapshot 저장 이후 흐른 시간이다." source="/api/ops → server.metrics.snapshotAgeSeconds" /><strong>{formatNumber(ops?.server.metrics.snapshotAgeSeconds ?? 0, 1)}초</strong></div>
             <div><MetricLabel label="RSS 메모리" description="힙과 네이티브 메모리를 포함한 게임 서버 프로세스의 실제 상주 메모리다." source="/api/ops → server.metrics.memoryRssMb · process.memoryUsage().rss" /><strong>{formatNumber(ops?.server.metrics.memoryRssMb ?? 0, 1)}MB</strong></div>
@@ -525,7 +556,7 @@ export const AdminPage = () => {
           <section className="panel metric-history-panel">
             <div className="panel-heading">
               <div><span className="panel-kicker">실시간 트래픽 추이</span><h2>운영·부하 지표</h2></div>
-              <span className="actual-tag">최근 120초</span>
+              <span className="actual-tag">{ops?.server.identity.releaseChannel.toUpperCase() ?? "—"} · 최근 120초</span>
             </div>
             <div className="ops-health-strip">
               <div><MetricLabel label="초당 입력" description="서버가 최근 1초 동안 받은 player_input 이벤트 수다." source="/api/ops → server.inputEventsPerSecond" /><strong>{formatNumber(ops?.server.inputEventsPerSecond ?? 0)}</strong></div>
